@@ -3,10 +3,17 @@
 
 //multiple threads for co-processing.
 
+#include <pthread.h>
+#include <stdlib.h>
+#include <unistd.h>
 
-#include "windows.h"
+#ifdef __linux__
+#include <sched.h>
+#endif
+
 #define NUM_CORE_CPU 4
 #define MAX_RUN ((1<<(NUM_CORE_CPU+1))-1)
+
 struct threadPar{
 	int threadid;
 	void init(int pthreadid)
@@ -14,23 +21,17 @@ struct threadPar{
 		threadid=pthreadid;
 	}
 };
+
+// Thread function type for POSIX
+typedef void* (*thread_func_t)(void*);
+
 struct MyThreadPoolCop
 {
 public:
-	/*void create()
-	{
-		dwThreadId=NULL;
-		hThread=NULL;
-		masks=NULL;
-		tParam=NULL;
-		numThread=0;
-	}*/
 	void destory()
 	{
-		if(dwThreadId!=NULL)
-			free(dwThreadId);
-		if(hThread!=NULL)
-			free(hThread);
+		if(threadIds!=NULL)
+			free(threadIds);
 		if(masks!=NULL)
 			free(masks);
 		if(tParam!=NULL)
@@ -40,12 +41,12 @@ public:
 	}
 	// the number of threads
 	int numThread;
-	// //the mask assigning threads to which core/processors
+	// the mask assigning threads to which core/processors
 	int* masks;
-	DWORD *dwThreadId;
-	HANDLE *hThread;
+	pthread_t *threadIds;
 	void ** tParam;
-	LPTHREAD_START_ROUTINE* pfnThreadProc;
+	thread_func_t* pfnThreadProc;
+
 //functions.
 	int setCPUID(int tid, int cpuid)
 	{
@@ -54,7 +55,7 @@ public:
 		return 0;
 	}
 
-	int assignTask(int tid, LPTHREAD_START_ROUTINE  pfn)
+	int assignTask(int tid, thread_func_t pfn)
 	{
 		pfnThreadProc[tid]=pfn;
 		return 0;
@@ -71,29 +72,30 @@ public:
 		int i=0;
 		for( i=0; i<numThread; i++ )
 		{
-			hThread[i] = CreateThread( 
-				NULL,              // default security attributes
-				0,                 // use default stack size  
-				pfnThreadProc[i],        // thread function 
-				tParam[i],             // argument to thread function 
-				0,                 // use default creation flags 
-				&dwThreadId[i]);   // returns the thread identifier 
+			int result = pthread_create(&threadIds[i], NULL, pfnThreadProc[i], tParam[i]);
 	 
-			// Check the return value for success. 
-			SetThreadAffinityMask(hThread[i],masks[i]);
+			// Set CPU affinity if available (Linux-specific)
+#ifdef __linux__
+			cpu_set_t cpuset;
+			CPU_ZERO(&cpuset);
+			// Set affinity based on mask
+			for(int cpu = 0; cpu < NUM_CORE_CPU; cpu++) {
+				if(masks[i] & (1 << cpu)) {
+					CPU_SET(cpu, &cpuset);
+				}
+			}
+			pthread_setaffinity_np(threadIds[i], sizeof(cpu_set_t), &cpuset);
+#endif
 	 
-			if (hThread[i] == NULL) 
+			if (result != 0) 
 			{
-				ExitProcess(i);
+				return i;
 			}
 		}
 		// Wait until all threads have terminated.
-
-		WaitForMultipleObjects(numThread, hThread, TRUE, INFINITE);
-		// Close all thread handles upon completion.
 		for(i=0; i<numThread; i++)
 		{
-			CloseHandle(hThread[i]);
+			pthread_join(threadIds[i], NULL);
 		}
 		return 0;
 	}
@@ -101,16 +103,14 @@ public:
 	void create(int nThead)
 	{
 		numThread=nThead;
-		dwThreadId=(DWORD*)malloc(sizeof(DWORD)*numThread);
-		hThread=(HANDLE*)malloc(sizeof(HANDLE)*numThread);
+		threadIds=(pthread_t*)malloc(sizeof(pthread_t)*numThread);
 		masks=(int*)malloc(sizeof(int)*numThread);
 		int i=0;
 		for(i=0;i<numThread;i++)
 			masks[i]=(1<<i)%MAX_RUN;
 		tParam=(void**)malloc(sizeof(void*)*numThread);
-		pfnThreadProc=(LPTHREAD_START_ROUTINE*)malloc(sizeof(LPTHREAD_START_ROUTINE)*numThread);
+		pfnThreadProc=(thread_func_t*)malloc(sizeof(thread_func_t)*numThread);
 	}
 };
 
 #endif
-
