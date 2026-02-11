@@ -4,6 +4,7 @@
 #include "QP_Utility.h"
 #include "stdlib.h"
 #include "stdio.h"
+#include <string.h>
 
 #define NUM_ENTRY 64
 struct Bucket{

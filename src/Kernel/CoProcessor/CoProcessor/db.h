@@ -50,7 +50,9 @@ typedef int RET_VALUE;
 
 #define OFFSET ((1<<15)-1)
 #define TEST_MAX ((1<<30)-1)
+#ifdef _WIN32
 #define NON_LINUX_PLAT 1
+#endif
 #ifdef NON_LINUX_PLAT
 #define RAND(MAX) ((((rand()& OFFSET)<<15)+(rand()&1))+(rand()<<1)+(rand()&1))%MAX
 #else

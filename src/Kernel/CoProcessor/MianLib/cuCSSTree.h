@@ -3,6 +3,10 @@
 //
 //#include <QP_Utility.cu>
 
+// If TonyLib/CSSTree.h is already included, skip redundant type definitions
+// to avoid redefinition conflicts. The struct layouts are identical.
+#ifndef CSS_TREE_H_
+
 typedef int IKeyType;
 
 #ifdef __cplusplus
@@ -64,3 +68,5 @@ extern "C" {
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* !CSS_TREE_H_ */

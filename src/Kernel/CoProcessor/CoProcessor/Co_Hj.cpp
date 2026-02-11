@@ -1,11 +1,15 @@
 #include "CoProcessor.h"
 #include "MyThreadPoolCop.h"
-#include "CPU_Dll.h"
-#include "GPU_Dll.h"
+#include "../MyLib/CPU_Dll.h"
+#include "Helper.h"
 #include <vector>
 using namespace std;
 
-DWORD WINAPI tp_hj( LPVOID lpParam ) 
+#ifdef _WIN32
+DWORD WINAPI tp_hj( LPVOID lpParam )
+#else
+void* tp_hj( void* lpParam )
+#endif
 { 
 	ws_hj* pData;
 	pData = (ws_hj*)lpParam;
@@ -124,25 +128,15 @@ int CO_hj(Record *R, int rLen, Record *S, int sLen, Record** Rout)
 		//CPU_Partition(S,sLen,numPartition, STempOut,SStartHist,1);
 		ON_CPU_DONE("partition S in hj");
 	}
-	/*else
-	{
-		ON_GPU("partition S in hj");
-		GPUCopy_Partition(R,rLen,numPartition, RTempOut,RStartHist);
-		ON_GPU_DONE("partition S in hj");
-		ON_CPU("partition R in hj");
-		GPUCopy_Partition(S,sLen,numPartition, STempOut,SStartHist);
-		ON_CPU_DONE("partition R in hj");
-	}*/
 	endTimer("partition",tt);
 
 	for( i=0; i<numThread; i++ )
 	{
 		// Allocate memory for thread data.
-		pData[i] = (ws_hj*) HeapAlloc(GetProcessHeap(),
-				HEAP_ZERO_MEMORY, sizeof(ws_hj));
+		pData[i] = (ws_hj*) calloc(1, sizeof(ws_hj));
 
 		if( pData[i]  == NULL )
-			ExitProcess(2);
+			exit(2);
 
 		// as far as we know if sorting 16M tuples on the GPU is as fast 
 		// as sorting 8M tuples on the GPU.
@@ -163,7 +157,7 @@ int CO_hj(Record *R, int rLen, Record *S, int sLen, Record** Rout)
 	pool->run();
 	for(i=0;i<numThread;i++)
 	{
-		HeapFree(GetProcessHeap(),0, pData[i]);
+		free(pData[i]);
 	}
 	free(pData);
 	pool->destory();
@@ -173,7 +167,7 @@ int CO_hj(Record *R, int rLen, Record *S, int sLen, Record** Rout)
 	
 	delete tempResultVec;
 	delete tempSizeVec;
-	delete RTempOut;
-	delete STempOut;
+	delete[] RTempOut;
+	delete[] STempOut;
 	return resultSize;
 }

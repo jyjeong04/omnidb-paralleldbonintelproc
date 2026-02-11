@@ -40,7 +40,7 @@ void getValueListImpl (cl_mem d_Rin,int delta, int rLen, cl_mem* d_ValueList, cl
 
 	cl_getKernel("getValueList_kernel",kernel);
     // Set the Argument values
-    cl_int ciErr1 = clSetKernelArg((*kernel), 0, sizeof(cl_int), (void*)d_ValueList);
+    cl_int ciErr1 = clSetKernelArg((*kernel), 0, sizeof(cl_mem), (void*)d_ValueList);
 	ciErr1 |= clSetKernelArg((*kernel), 1, sizeof(cl_int), (void*)&delta);
 	ciErr1 |= clSetKernelArg((*kernel), 2, sizeof(cl_mem), (void*)&d_tempOutput);
     ciErr1 |= clSetKernelArg((*kernel), 3, sizeof(cl_int), (void*)&rLen);

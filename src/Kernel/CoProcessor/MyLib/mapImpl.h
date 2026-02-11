@@ -8,7 +8,11 @@
 
 
 //primitives.
+#ifdef _WIN32
 template <class T> DWORD WINAPI tp_mapImpl( LPVOID lpParam ) 
+#else
+template <class T> void* tp_mapImpl( void* lpParam ) 
+#endif
 { 
     ws_map<T>* pData;
 	pData = (ws_map<T>*)lpParam;
@@ -25,7 +29,11 @@ template <class T> DWORD WINAPI tp_mapImpl( LPVOID lpParam )
 		//mapFunc((void*)(Rin+i), para, (void*)(Rout+i));
 		mapFunc((void*)(Rin+i), para, (((T*)Rout)+i));
 	}
+#ifdef _WIN32
 	return sum;
+#else
+	return NULL;
+#endif
 } 
 
 
@@ -42,11 +50,10 @@ template <class T> void mapImpl_thread(Record *Rin, int Query_rLen, mapper_t map
 	for( i=0; i<numThread; i++ )
 	{
 		// Allocate memory for thread data.
-		pData[i] = (ws_map<T>*) HeapAlloc(GetProcessHeap(),
-				HEAP_ZERO_MEMORY, sizeof(ws_map<T>));
+		pData[i] = (ws_map<T>*) calloc(1, sizeof(ws_map<T>));
 
 		if( pData[i]  == NULL )
-			ExitProcess(2);
+			exit(2);
 
 		// Generate unique data for each thread.
 		pData[i]->Rin=Rin;
@@ -62,7 +69,7 @@ template <class T> void mapImpl_thread(Record *Rin, int Query_rLen, mapper_t map
 	pool->run();
 	delete pool;
 	for(i=0;i<numThread;i++)
-		HeapFree(GetProcessHeap(),0, pData[i]);
+		free(pData[i]);
 	free(pData);
 }
 

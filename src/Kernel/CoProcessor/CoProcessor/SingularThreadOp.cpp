@@ -1,5 +1,5 @@
 #include "SingularThreadOp.h"
-#include "CPU_Dll.h"
+#include "../MyLib/CPU_Dll.h"
 
 
 SingularThreadOp::SingularThreadOp(OP_MODE opt)

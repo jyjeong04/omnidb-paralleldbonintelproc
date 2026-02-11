@@ -4,6 +4,7 @@
 # Compiler and flags
 CXX = g++
 CC = gcc
+AR = ar
 CXXFLAGS = -std=c++11 -O2 -Wall -fPIC -D__linux__
 CFLAGS = -O2 -Wall -fPIC -D__linux__
 
@@ -83,9 +84,15 @@ $(TARGET): $(OBJECTS) $(TEST_OBJECTS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
 	@echo "Build complete: $(TARGET)"
 
-# Build shared library
-shared: $(OBJECTS)
+# Build shared library (includes test sources for *Impl functions)
+shared: $(OBJECTS) $(TEST_OBJECTS)
 	$(CXX) $(CXXFLAGS) -shared -o $(SHARED_LIB) $^ $(LIBS)
+
+# Build static library (for single-file executable)
+STATIC_LIB = libomnidb_opencl.a
+static: $(OBJECTS) $(TEST_OBJECTS)
+	$(AR) rcs $(STATIC_LIB) $^
+	@echo "Build complete: $(STATIC_LIB)"
 
 # Create build directory if it doesn't exist
 $(BUILD_DIR):
@@ -98,7 +105,7 @@ $(BUILD_DIR)/%.o: %.cpp | $(BUILD_DIR)
 # Clean build artifacts
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(TARGET) $(SHARED_LIB)
+	rm -f $(TARGET) $(SHARED_LIB) $(STATIC_LIB)
 	@echo "Clean complete"
 
 # Install (optional)
@@ -131,4 +138,4 @@ help:
 	@echo "  - PoCL (Portable Computing Language) for CPU+GPU support"
 	@echo "  - Intel OpenCL runtime for Intel GPU support"
 
-.PHONY: all clean install debug check-opencl help shared
+.PHONY: all clean install debug check-opencl help shared static

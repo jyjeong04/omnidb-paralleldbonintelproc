@@ -1,6 +1,6 @@
 #ifndef COMMON_H
 #define COMMON_H
-#include "CL\cl.h"
+#include "CL/cl.h"
 #include "QP_Utility.h"
 #include "Primitive.h"
 #include "LinkedList.h"

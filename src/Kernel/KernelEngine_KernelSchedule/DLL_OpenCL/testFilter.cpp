@@ -51,7 +51,7 @@ void filterImpl_outSize_int(cl_mem d_outSize,cl_mem d_mark,cl_mem d_markOutput,i
     cl_int ciErr1 = clSetKernelArg((*Kernel), 0, sizeof(cl_mem), (void*)&d_outSize);	
 	ciErr1 = clSetKernelArg((*Kernel), 1, sizeof(cl_mem), (void*)&d_mark);	
 	ciErr1 = clSetKernelArg((*Kernel), 2, sizeof(cl_mem), (void*)&d_markOutput);
-	ciErr1 = clSetKernelArg((*Kernel), 3, sizeof(cl_mem), (void*)&rLen);
+	ciErr1 = clSetKernelArg((*Kernel), 3, sizeof(cl_int), (void*)&rLen);
     if (ciErr1 != CL_SUCCESS)
     {
         printf("Error in clSetKernelArg, Line %u in file %s !!!\n\n", __LINE__, __FILE__);

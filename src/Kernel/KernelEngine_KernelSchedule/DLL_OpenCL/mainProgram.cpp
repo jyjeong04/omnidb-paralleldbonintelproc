@@ -673,8 +673,6 @@ void *burdenMeasure(void *lpParam) {
 void *performanceTester(void *lpParam) {
   threadPar *pData;
   pData = (threadPar *)lpParam;
-  // Note: Thread priority setting removed (POSIX equivalent requires
-  // privileges)
   int pid = pData->threadid;
   int choice = 11;
   switch (choice) {
@@ -902,21 +900,25 @@ void EngineStop() {
   int i;
   sprintf(outputFilename, "output/ExpOut_cpuBurden.tony");
   ofp = fopen(outputFilename, "w");
-  for (i = 0; i < cpuburden_index; i++) {
-    fprintf(ofp, "%.5f\n", cpuburden[i]);
+  if (ofp) {
+    for (i = 0; i < cpuburden_index; i++) {
+      fprintf(ofp, "%.5f\n", cpuburden[i]);
+    }
+    fclose(ofp);
   }
-  fclose(ofp);
 
   sprintf(outputFilename, "output/ExpOut_gpuBurden.tony");
   ofp = fopen(outputFilename, "w");
-  for (i = 0; i < gpuburden_index; i++) {
-    fprintf(ofp, "%.5f\n", gpuburden[i]);
+  if (ofp) {
+    for (i = 0; i < gpuburden_index; i++) {
+      fprintf(ofp, "%.5f\n", gpuburden[i]);
+    }
+    fclose(ofp);
   }
-  fclose(ofp);
 }
 // Main function
 // *********************************************************************
-int main(int argc, char **argv) {
+int gmain(int argc, char **argv) {
   EngineStart(0, 1);
 #if 0
   int TestCounter = 0;

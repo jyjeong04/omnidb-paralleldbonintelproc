@@ -1,5 +1,5 @@
 #include "GroupByThreadOp.h"
-#include "CPU_Dll.h"
+#include "../MyLib/CPU_Dll.h"
 
 
 GroupByThreadOp::GroupByThreadOp(OP_MODE opt):

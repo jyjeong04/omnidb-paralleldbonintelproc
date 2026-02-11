@@ -1,4 +1,4 @@
-#include "CPU_Dll.h"
+#include "../MyLib/CPU_Dll.h"
 #include "SingularThreadOp.h"
 #include "CoProcessorTest.h"
 #include <iostream>
@@ -17,8 +17,15 @@ double RunInGPU[12];
 
 double Query_CPUBurden=0;
 double Query_GPUBurden=0;
+
+#ifdef _WIN32
 CRITICAL_SECTION Query_CPUBurdenCS;
 CRITICAL_SECTION Query_GPUBurdenCS;
+#else
+pthread_mutex_t Query_CPUBurdenCS = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t Query_GPUBurdenCS = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
 int numQueries=30;//->corresponding to numOfThread for K_schedule
 int numThread=4;//this is fixed to 1 for Q and O schedule
 int Query_rLen=2*1024*1024;
@@ -40,8 +47,12 @@ int main(int argc, char **argv)
 	}
 
 	EngineStart(0,1);
+#ifdef _WIN32
 	InitializeCriticalSection(&(Query_GPUBurdenCS));
 	InitializeCriticalSection(&(Query_CPUBurdenCS));
+#else
+	// Already initialized with PTHREAD_MUTEX_INITIALIZER
+#endif
 	int choice;
 	QUERY_TYPE qt;
 	initDB2("RS.conf",TEST_MAX);

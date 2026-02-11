@@ -1,9 +1,7 @@
 #ifndef CO_PROCESSOR_TEST_H
 #define CO_PROCESSOR_TEST_H
 
-#include "windows.h"
 #include "CoProcessor.h"
-#include "CoProcessorTest.h"
 
 typedef enum{
 	Q_POINT_SELECTION,
@@ -32,7 +30,9 @@ struct Query_stat{
 
 
 struct tp_batchQuery{
+#ifdef _WIN32
 	HANDLE dispatchMutex;
+#endif
 	int* curQueryID;
 	int totalQuery;
 	char** sqlQuery;
@@ -74,4 +74,3 @@ int pickQuerySmart(Query_stat *gQstat, int numQuery);
 void testMbench(int numQuery, EXEC_MODE eM, int numThread, int scale);
 
 #endif
-

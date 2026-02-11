@@ -3,7 +3,14 @@
 #include "stdlib.h"
 #include "stdio.h"
 #include "string.h"
+
+#ifdef _WIN32
 #include "windows.h"
+#include <crtdbg.h>
+#else
+#include <assert.h>
+#endif
+
 #include "Helper.h"
 #define ADA_START_TYPE (GROUP_BY)
 #define ADA_END_TYPE (JOIN_HJ)
@@ -21,19 +28,16 @@ void QueryPlanTree::buildTree(char * str)
 QueryPlanTree::~QueryPlanTree()
 {
 	////printf("Some one call to delete tree\n");
+#ifdef _WIN32
 	_ASSERTE( _CrtCheckMemory( ) );
+#endif
 	int i=0;
 	for(i=0;i<totalNumNode;i++)
 	{
 		if(nodeVec[i]!=NULL){
-			//_ASSERTE( _CrtCheckMemory( ) );
-			////printf("delete nodeVec..%d\n",i);
-			delete nodeVec[i];// no need to delete nodeVec??
-			//_ASSERTE( _CrtCheckMemory( ) );
-			////printf("delete nodeVec..%d succeed\n",i);
+			delete nodeVec[i];
 		}
 		else{
-			////printf("!!already delete!\n");
 		}
 	}
 	planStatus->destory();
@@ -150,4 +154,3 @@ void QueryPlanTree::Marshup(QueryPlanNode * node)
 	nodeVec.push_back(node);
 	totalNumNode++;
 }
-

@@ -1,10 +1,49 @@
 #ifndef CO_PROCESSOR_H
 #define CO_PROCESSOR_H
 #include "../MyLib/QP_Utility.h"
+
+#ifdef _WIN32
 #include "windows.h"
-#include "CC_CSSTree.h"
+#else
+#include <pthread.h>
+#include <stdlib.h>
+// Linux compatibility: HANDLE is a pthread_mutex_t pointer
+typedef pthread_mutex_t* HANDLE;
+
+#ifndef FALSE
+#define FALSE 0
+#endif
+#ifndef TRUE
+#define TRUE 1
+#endif
+#ifndef INFINITE
+#define INFINITE 0xFFFFFFFF
+#endif
+
+// Windows API compatibility wrappers using pthreads
+static inline HANDLE CreateMutexLinux() {
+	HANDLE mtx = (HANDLE)malloc(sizeof(pthread_mutex_t));
+	pthread_mutex_init(mtx, NULL);
+	return mtx;
+}
+static inline void WaitForSingleObject(HANDLE mtx, unsigned int /*timeout_unused*/) {
+	pthread_mutex_lock(mtx);
+}
+static inline void ReleaseMutex(HANDLE mtx) {
+	pthread_mutex_unlock(mtx);
+}
+static inline void CloseHandle(HANDLE mtx) {
+	pthread_mutex_destroy(mtx);
+	free(mtx);
+}
+#define CreateMutex(a, b, c) CreateMutexLinux()
+
+#endif /* !_WIN32 */
+
+#include "../MyLib/CC_CSSTree.h"
 #include "db.h"
-#include "OpenCL_DLL.h"
+#include "../TonyLib/OpenCL_DLL.h"
+#include "../MianLib/GPU_Dll.h"
 #include <vector>
 using namespace std;
 
@@ -188,7 +227,7 @@ struct ws_coinlj
 struct ws_hj
 {
 	Record* R;
-	int Query_rLen;
+	int rLen;
 	Record* S;
 	int sLen;
 	int* curPartition;
@@ -208,7 +247,7 @@ struct ws_hj
 		vector<Record**>* pRVec, vector<int>* pSizeVec)
 	{
 		R=pR;
-		Query_rLen=pRLen;
+		rLen=pRLen;
 		S=pS;
 		sLen=pSLen;
 		dispatchMutex=pDMutex;
@@ -239,7 +278,37 @@ char* OpToString(OP_MODE op, EXEC_MODE eM);
 
 void setHighPriority();
 
+///////////////////////////////////////////////////////////////////////////////////
+// GPUCopy_* wrapper functions
+// These wrap the CL_* host-pointer functions with CPU_GPU=1 (GPU execution).
+// The CL_* functions handle the host-to-device copy, kernel execution, and
+// device-to-host copy internally.
+///////////////////////////////////////////////////////////////////////////////////
+inline int GPUCopy_hj(Record *R, int rLen, Record *S, int sLen, Record **Rout) {
+	return CL_hj(R, rLen, S, sLen, Rout, 1);
+}
+
+inline int GPUCopy_ninlj(Record *R, int rLen, Record *S, int sLen, Record **Rout) {
+	return CL_ninlj(R, rLen, S, sLen, Rout, 1);
+}
+
+inline int GPUCopy_inlj(Record *R, int rLen, CUDA_CSSTree *tree, Record *S, int sLen, Record **Rout) {
+	// TonyLib CL_inlj takes CUDA_CSSTree** (pointer-to-pointer)
+	CUDA_CSSTree *treePtr = tree;
+	return CL_inlj(R, rLen, &treePtr, S, sLen, Rout, 1);
+}
+
+inline void GPUCopy_QuickSort(Record *R, int rLen, Record *Rout) {
+	CL_QuickSort(R, rLen, Rout, 1);
+}
+
+inline void GPUCopy_bitonicSort(Record *R, int rLen, Record *Rout) {
+	CL_bitonicSort(R, rLen, Rout, 128, 1024, 1);
+}
+
+inline void GPUCopy_Partition(Record *R, int rLen, int numPart, Record *Rout, int *startHist) {
+	CL_Partition(R, rLen, numPart, Rout, startHist, -1, -1, 1);
+}
 
 
 #endif
-

@@ -9,7 +9,13 @@
 #define WORK_STEALING 1
 #define STEALING_CHANCE 3
 extern FILE *K_ofp;
+
+#ifdef _WIN32
 CRITICAL_SECTION PoolLock;
+#else
+pthread_mutex_t PoolLock = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
 int CurentID;
 extern int numQueries;//->corresponding to numOfThread for K_schedule
 extern int numThread;//this is fixed to 1 for Q and O schedule
@@ -27,8 +33,13 @@ void tp_QueryThread(tp_singleQuery* _pData)
 	int len=tree.planStatus->numResultColumn*tree.planStatus->numResultRow;
 	free(tree.planStatus->finalResult);
 }
+
 //the naive query processor, just pick the query random one by one.
-DWORD WINAPI tp_naiveQP( LPVOID lpParam ) 
+#ifdef _WIN32
+DWORD WINAPI tp_naiveQP( LPVOID lpParam )
+#else
+void* tp_naiveQP( void* lpParam )
+#endif
 { 
 	tp_batchQuery* pData;
 	pData = (tp_batchQuery*)lpParam;
@@ -42,28 +53,42 @@ DWORD WINAPI tp_naiveQP( LPVOID lpParam )
 	while(1)
 	{
 		//get the tuples to sort
+#ifdef _WIN32
 		EnterCriticalSection(&(PoolLock));
+#else
+		pthread_mutex_lock(&PoolLock);
+#endif
 		curQuery=CurentID++;
+#ifdef _WIN32
 		LeaveCriticalSection(&(PoolLock));
+#else
+		pthread_mutex_unlock(&PoolLock);
+#endif
 		if(curQuery>=numQueries) 
 		{
 			break;
 		}
 		query=sqlQuery[curQuery];//the query pick going to be execute
 
-		tp_singleQuery* pData = (tp_singleQuery*) HeapAlloc(GetProcessHeap(),
-				HEAP_ZERO_MEMORY, sizeof(tp_singleQuery));
+		tp_singleQuery* pData = (tp_singleQuery*) calloc(1, sizeof(tp_singleQuery));
 		pData->init(gQstat[curQuery].eM,query,curQuery,threadid);
 		tp_QueryThread(pData);
-		HeapFree(GetProcessHeap(),0, pData);
+		free(pData);
 		//resetGPU();
 	}
+#ifdef _WIN32
 	return 0;
+#else
+	return NULL;
+#endif
 } 
 void testQueryProcessor(QUERY_TYPE fromType, QUERY_TYPE toType, int numQuery,int numThread)
 {
-//	HANDLE dispatchMutex = CreateMutex( NULL, FALSE, NULL );  
+#ifdef _WIN32
 	InitializeCriticalSection(&(PoolLock));
+#else
+	// Already initialized with PTHREAD_MUTEX_INITIALIZER
+#endif
 	MyThreadPoolCop *pool=(MyThreadPoolCop*)malloc(sizeof(MyThreadPoolCop));	
 	pool->create(numThread);//always one thread to handle query request regardsless how many query are there.
 	int i=0;
@@ -83,11 +108,10 @@ void testQueryProcessor(QUERY_TYPE fromType, QUERY_TYPE toType, int numQuery,int
 	for( i=0; i<numThread; i++ )
 	{
 		// Allocate memory for thread data.
-		pData[i] = (tp_batchQuery*) HeapAlloc(GetProcessHeap(),
-				HEAP_ZERO_MEMORY, sizeof(tp_batchQuery));
+		pData[i] = (tp_batchQuery*) calloc(1, sizeof(tp_batchQuery));
 
 		if( pData[i]  == NULL )
-			ExitProcess(2);
+			exit(2);
 			pData[i]->init(&curID,numQuery,sqlQuery,gQStat,i);
 			pool->assignParameter(i, pData[i]);
 			pool->assignTask(i, tp_naiveQP);
@@ -107,10 +131,10 @@ void testQueryProcessor(QUERY_TYPE fromType, QUERY_TYPE toType, int numQuery,int
 	}else{
 		fprintf(stderr,"\t output file is not created, please check file premission!\n");
 	}
-	printf("------------Kernel level Query finished in %lfd---------------\n\n",t);
+	printf("------------Kernel level Query finished in %lf---------------\n\n",t);
 	for(i=0;i<numThread;i++)
 	{
-		HeapFree(GetProcessHeap(),0, pData[i]);
+		free(pData[i]);
 	}
 	free(pData);
 	pool->destory();	
