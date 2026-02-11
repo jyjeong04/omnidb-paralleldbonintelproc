@@ -11,7 +11,7 @@
 #include <sched.h>
 #endif
 
-#define NUM_CORE_CPU 4
+#define NUM_CORE_CPU 8
 #define MAX_RUN ((1<<(NUM_CORE_CPU+1))-1)
 
 struct threadPar{

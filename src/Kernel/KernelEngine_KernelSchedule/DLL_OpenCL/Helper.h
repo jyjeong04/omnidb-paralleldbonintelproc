@@ -1,3 +1,4 @@
+#include "CL/cl.h"
 int DLL_genTimer(int timerID);
 double DLL_getTimer(int timerID);
 void DLL_stopTimer(int timerID);

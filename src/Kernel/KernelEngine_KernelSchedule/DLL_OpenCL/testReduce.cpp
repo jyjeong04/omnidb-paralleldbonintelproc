@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <math.h>
  
-#include "CL\opencl.h"
+#include "CL/opencl.h"
 #include "testReduce.h"
 #include "KernelScheduler.h"
 #include "OpenCL_DLL.h"
@@ -151,7 +151,7 @@ void getResult_kernel_init(cl_mem d_Result, cl_mem d_Rout, int rLen,int OPERATOR
     cl_int ciErr1 = clSetKernelArg((*kernel), 0, sizeof(cl_mem), (void*)&d_Result);	
 	ciErr1 |= clSetKernelArg((*kernel), 1, sizeof(cl_mem), (void*)&d_Rout);
     ciErr1 |= clSetKernelArg((*kernel), 2, sizeof(cl_int), (void*)&rLen);
-    ciErr1 |= clSetKernelArg((*kernel), 3, sizeof(cl_mem), (void*)&OPERATOR);    
+    ciErr1 |= clSetKernelArg((*kernel), 3, sizeof(cl_int), (void*)&OPERATOR);    
 
 	if (ciErr1 != CL_SUCCESS)
     {

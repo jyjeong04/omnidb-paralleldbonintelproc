@@ -1,18 +1,27 @@
-#include "CL\cl.h"
+// Linux-compatible OpenCL headers
+#define CL_TARGET_OPENCL_VERSION 120
+#include <CL/cl.h>
 #include <stdio.h>
-#include "string.h"
+#include <string.h>
 #include <cstdlib>
-#include "stdlib.h"
+#include <stdlib.h>
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <SDKFile.hpp>
-#include <SDKCommon.hpp>
-#include <SDKApplication.hpp>
+#include <cmath>
+#include <pthread.h>
+#include <unistd.h>
+#include <sys/time.h>
+#include <cassert>
+
+// Local SDK replacement headers
+#include "SDKFile.hpp"
+#include "SDKCommon.hpp"
+#include "SDKApplication.hpp"
 #include "verctor_types.h"
 #define _tonyPrint_(STR) printf(STR)
 //#define _tonyPrint_(STR)
-#include "assert.h"
+// Note: assert is included via <cassert> above
 #define COALESCED
 void bufferchecking(cl_mem R_in,size_t size);
 typedef uint2 Rec;

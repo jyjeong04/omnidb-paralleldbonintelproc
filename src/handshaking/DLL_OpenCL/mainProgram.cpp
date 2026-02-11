@@ -300,10 +300,8 @@ void handShaking() {
       case 4: {
         break;
       }
-      case 5: { // copyLastElement_kernel
-        inital();
-        copyLastElement_kernel_handshake(CPU_GPU, &testkernel);
-        AnyHowFree();
+      case 5: { /*projection_map_kernel*/
+
         break;
       }
       case 6: { /*perscanFirstPass_kernel*/
