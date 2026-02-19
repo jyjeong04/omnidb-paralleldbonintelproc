@@ -3,7 +3,7 @@
 #include <string.h>
 #include "QueryPlanNode.h"
 #include "QueryPlanTree.h"
-#include "QP_Utility.h"
+#include "../MyLib/QP_Utility.h"
 #include "time.h"
 #include "assert.h"
 #include "Database.h"
@@ -25,6 +25,6 @@ extern double OP_UpGPUBurden;
 extern double OP_LoGPUBurden;
 extern double OP_CPUBurden;
 extern double OP_GPUBurden;
-extern CRITICAL_SECTION OP_CPUBurdenCS;
-extern CRITICAL_SECTION OP_GPUBurdenCS;
+extern pthread_mutex_t OP_CPUBurdenCS;
+extern pthread_mutex_t OP_GPUBurdenCS;
 EXEC_MODE OPScheduler(OP_MODE _optType);

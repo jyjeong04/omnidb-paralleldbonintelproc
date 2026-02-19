@@ -3,7 +3,7 @@
 #include <string.h>
 #include "QueryPlanNode.h"
 #include "QueryPlanTree.h"
-#include "QP_Utility.h"
+#include "../MyLib/QP_Utility.h"
 #include "time.h"
 #include "assert.h"
 #include "Database.h"
@@ -25,21 +25,21 @@ extern double OP_UpGPUBurden;
 extern double OP_LoGPUBurden;
 extern double OP_CPUBurden;
 extern double OP_GPUBurden;
-extern CRITICAL_SECTION OP_CPUBurdenCS;
-extern CRITICAL_SECTION OP_GPUBurdenCS;
-extern CRITICAL_SECTION preEMCS;
+extern pthread_mutex_t OP_CPUBurdenCS;
+extern pthread_mutex_t OP_GPUBurdenCS;
+extern pthread_mutex_t preEMCS;
 
 //#define Greedy
 static int preEm=EXEC_CPU;
 void inline GPUBurdenINC(const double burden){
-		EnterCriticalSection(&(OP_GPUBurdenCS));
+		pthread_mutex_lock(&(OP_GPUBurdenCS));
 		OP_GPUBurden+=(burden);
-		LeaveCriticalSection(&(OP_GPUBurdenCS));
+		pthread_mutex_unlock(&(OP_GPUBurdenCS));
 }
 void inline CPUBurdenINC(const double burden){
-		EnterCriticalSection(&(OP_CPUBurdenCS));
+		pthread_mutex_lock(&(OP_CPUBurdenCS));
 		OP_CPUBurden+=(burden);
-		LeaveCriticalSection(&(OP_CPUBurdenCS));
+		pthread_mutex_unlock(&(OP_CPUBurdenCS));
 }
 
 EXEC_MODE OPScheduler(OP_MODE _optType)
@@ -56,7 +56,7 @@ EXEC_MODE OPScheduler(OP_MODE _optType)
 		GPUBurdenINC(AddGPUBurden_OP[_optType]);
 	}
 #else
-		EnterCriticalSection(&(preEMCS));
+		pthread_mutex_lock(&(preEMCS));
 	 	if(preEm==EXEC_CPU){
 			eM=EXEC_GPU;
 			GPUBurdenINC(AddGPUBurden_OP[_optType]);
@@ -67,7 +67,7 @@ EXEC_MODE OPScheduler(OP_MODE _optType)
 			CPUBurdenINC(AddCPUBurden_OP[_optType]);
 			preEm=EXEC_CPU;
 		}
-		LeaveCriticalSection(&(preEMCS));
+		pthread_mutex_unlock(&(preEMCS));
 #endif
 	return eM;
 }

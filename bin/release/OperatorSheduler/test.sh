@@ -9,7 +9,7 @@ while [ "$count" -le 0 ]; do
     while [ "$threadnum" -le 8 ]; do
         querynum=15
         while [ "$querynum" -le 30 ]; do
-            ./CoProcessor "$querynum" "$threadnum"
+            ./CoProcessorApp "$querynum" "$threadnum"
             querynum=$((querynum + 5))
         done
         threadnum=$((threadnum + 2))

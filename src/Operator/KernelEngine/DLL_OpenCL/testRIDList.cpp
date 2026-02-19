@@ -19,7 +19,7 @@ void setRIDListImpl (cl_mem d_RIDList, cl_mem d_tempOutput,int delta, int rLen, 
 	size_t globalWorkingSetSize=numThreadPB*numBlock;
 	cl_getKernel( "setRIDList_kernel",Kernel);
     // Set the Argument values
-    cl_int ciErr1 = clSetKernelArg((*Kernel), 0, sizeof(cl_int), (void*)&d_RIDList);	
+    cl_int ciErr1 = clSetKernelArg((*Kernel), 0, sizeof(cl_mem), (void*)&d_RIDList);	
 	ciErr1 |= clSetKernelArg((*Kernel), 1, sizeof(cl_int), (void*)&delta);
 	ciErr1 |= clSetKernelArg((*Kernel), 2, sizeof(cl_mem), (void*)&d_tempOutput);
     ciErr1 |= clSetKernelArg((*Kernel), 3, sizeof(cl_int), (void*)&rLen);
@@ -39,7 +39,7 @@ void getRIDListImpl (cl_mem d_Rin,int delta, int rLen, cl_mem d_RIDList, cl_mem 
 	size_t globalWorkingSetSize=numThreadPB*numBlock;
 	cl_getKernel("getRIDList_kernel",Kernel);
     // Set the Argument values
-    cl_int ciErr1 = clSetKernelArg((*Kernel), 0, sizeof(cl_int), (void*)&d_RIDList);
+    cl_int ciErr1 = clSetKernelArg((*Kernel), 0, sizeof(cl_mem), (void*)&d_RIDList);
 	ciErr1 |= clSetKernelArg((*Kernel), 1, sizeof(cl_int), (void*)&delta);
 	ciErr1 |= clSetKernelArg((*Kernel), 2, sizeof(cl_mem), (void*)&d_tempOutput);
     ciErr1 |= clSetKernelArg((*Kernel), 3, sizeof(cl_int), (void*)&rLen);

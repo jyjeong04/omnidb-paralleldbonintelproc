@@ -36,7 +36,7 @@
 #ifndef _types_h
 #define _types_h
 //#define min(X,Y) ((X)>(Y)?(Y):(X))
-#include "qpUtility.h"
+#include "../MyLib/QP_Utility.h"
 
 
 #ifndef nil

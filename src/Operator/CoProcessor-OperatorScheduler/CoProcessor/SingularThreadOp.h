@@ -1,5 +1,5 @@
 #pragma once
-#include "threadop.h"
+#include "ThreadOp.h"
 
 class SingularThreadOp :
 	public ThreadOp

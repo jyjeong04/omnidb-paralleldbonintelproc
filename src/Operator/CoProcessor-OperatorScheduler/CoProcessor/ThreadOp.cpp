@@ -1,7 +1,7 @@
 #include "ThreadOp.h"
-#include "CPU_Dll.h"
+#include "../MyLib/CPU_Dll.h"
 #include <iostream>
-#include "OpenCL_DLL.h"
+#include "../TonyLib/OpenCL_DLL.h"
 using namespace std;
 
 ThreadOp::ThreadOp()

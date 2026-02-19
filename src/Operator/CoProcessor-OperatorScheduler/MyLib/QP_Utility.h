@@ -10,7 +10,7 @@
  */
 //CPU
 #include "time.h"
-#include "CL\cl.h"
+#include "CL/cl.h"
 void OP_bufferchecking(cl_mem R_in,size_t size);
 double getTimer(int timer);
 int genTimer(int timerID);

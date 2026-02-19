@@ -1,8 +1,12 @@
 #ifndef _GPU_DLL_H_
 #define _GPU_DLL_H_
 
+// When TonyLib/OpenCL_DLL.h is already included (_OPENCL_DLL_H_), skip cuCSSTree.h
+// and CUDA_CSSTree to avoid typedef redefinition (IDirectoryNode, IDataNode).
+// OpenCL_DLL.h provides these types with cl_mem-based CUDA_CSSTree.
+#ifndef _OPENCL_DLL_H_
 #include "cuCSSTree.h"
-#include "hashTable.h"
+#include "../MyLib/hashTable.h"
 
 typedef struct
 {
@@ -21,77 +25,66 @@ typedef struct
 		
 	}
 } CUDA_CSSTree;
-
+#else
+#include "../MyLib/hashTable.h"
+#endif /* !_OPENCL_DLL_H_ */
 
 
 ///////////////////////////////////////////////////////////////////////////////////
 //CL_
 ////////////////////////////////////////////////////////////////////////////////////
 
+// When OpenCL_DLL.h is already included, its extern "C" declarations provide
+// the correct C-linkage versions of these functions.  Skip the C++ declarations
+// below to avoid name-mangling mismatches against libomnidb_opencl.so.
+#ifndef _OPENCL_DLL_H_
+
 //selection
 int CL_PointSelection( Record* h_Rin, int rLen, int matchingKeyValue, Record** h_Rout, 
-															  int numThreadPB = 32, int numBlock = 256,int CPU_GPU=0);
+											  int numThreadPB = 32, int numBlock = 256,int CPU_GPU=0);
 
 int CL_RangeSelection( Record* h_Rin, int rLen, int rangeSmallKey, int rangeLargeKey, Record** h_Rout, 
-															  int numThreadPB = 64, int numBlock = 512,int CPU_GPU=0);
+											  int numThreadPB = 64, int numBlock = 512,int CPU_GPU=0);
 
 //projection
 void CL_Projection( Record* h_Rin, int rLen, Record* h_projTable, int pLen, 
-														   int numThread = 256, int numBlock = 256 ,int CPU_GPU=0);
+										   int numThread = 256, int numBlock = 256 ,int CPU_GPU=0);
 
 
 //aggregation
 int CL_AggMax( Record* h_Rin, int rLen, Record** d_Rout,
-													  int numThread = 256, int numBlock = 1024 ,int CPU_GPU=0);
+									  int numThread = 256, int numBlock = 1024 ,int CPU_GPU=0);
 
 int CL_AggMin( Record* h_Rin, int rLen, Record** d_Rout, 
-													  int numThread = 256, int numBlock = 1024 ,int CPU_GPU=0);
+									  int numThread = 256, int numBlock = 1024 ,int CPU_GPU=0);
 
 int CL_AggSum( Record* h_Rin, int rLen, Record** d_Rout, 
-													  int numThread = 256, int numBlock = 1024 ,int CPU_GPU=0);
+									  int numThread = 256, int numBlock = 1024 ,int CPU_GPU=0);
 
 int CL_AggAvg( Record* h_Rin, int rLen, Record** d_Rout, 
-													  int numThread = 256, int numBlock = 1024,int CPU_GPU=0 );
+									  int numThread = 256, int numBlock = 1024,int CPU_GPU=0 );
 
 //group by
 int	CL_GroupBy( Record* h_Rin, int rLen, Record* h_Rout, int** h_startPos, 
-					int numThread = 64, int numBlock = 1024,int CPU_GPU=0 );
+				int numThread = 64, int numBlock = 1024,int CPU_GPU=0 );
 
 //agg after group by
 void CL_agg_max_afterGroupBy( Record* h_Rin, int rLen, int* h_startPos, int numGroups, Record* h_Ragg, int* h_aggResults, 
-								  int numThread = 256,int CPU_GPU=0 ); 
+						  int numThread = 256,int CPU_GPU=0 ); 
 
 void CL_agg_min_afterGroupBy( Record* h_Rin, int rLen, int* h_startPos, int numGroups, Record* h_Ragg, int* h_aggResults, 
-								  int numThread = 256,int CPU_GPU=0 ); 
+						  int numThread = 256,int CPU_GPU=0 ); 
 
 void CL_agg_sum_afterGroupBy( Record* h_Rin, int rLen, int* h_startPos, int numGroups, Record* h_Ragg, int* h_aggResults, 
-								  int numThread = 256,int CPU_GPU=0 ); 
+						  int numThread = 256,int CPU_GPU=0 ); 
 
 void CL_agg_avg_afterGroupBy( Record* h_Rin, int rLen, int* h_startPos, int numGroups, Record* h_Ragg, int* h_aggResults, 
-								  int numThread = 256,int CPU_GPU=0 ); 
-
-//data structure
-void CL_BuildHashTable( Record* h_R, int rLen, int intBits, Bound* h_bound );
-
-int CL_BuildTreeIndex( Record* h_Rin, int rLen, CUDA_CSSTree** tree );
-
-int CL_HashSearch( Record* h_R, int rLen, Bound* h_bound, int inBits, Record* h_S, int sLen, Record** h_Rout, 
-														  int numThread = 512 ,int CPU_GPU=0);
-
-int CL_TreeSearch( Record* h_Rin, int rLen, CUDA_CSSTree* tree, Record* h_Sin, int sLen, Record** h_Rout,int CPU_GPU=0 );
-
-//for joins
+						  int numThread = 256,int CPU_GPU=0 ); 
 
 //sort
-void CL_bitonicSort( Record* h_Rin, int rLen, Record* h_Rout, 
-															int numThreadPB = 128, int numBlock = 1024 ,int CPU_GPU=0);
-
-void CL_QuickSort( Record* h_Rin, int rLen, Record* h_Rout ,int CPU_GPU=0);
-
 void CL_RadixSort( Record* h_Rin, int rLen, Record* h_Rout ,int CPU_GPU=0);
 
 //join
-
 int CL_ninlj( Record* h_R, int rLen, Record* h_S, int sLen, Record** h_Rout ,int CPU_GPU=0);
 
 int	CL_smj( Record* h_R, int rLen, Record* h_S, int sLen, Record** h_Joinout ,int CPU_GPU=0);
@@ -102,9 +95,30 @@ int CL_inlj( Record* h_Rin, int rLen, CUDA_CSSTree* h_tree, Record* h_Sin, int s
 
 int CL_mj( Record* h_Rin, int rLen, Record* h_Sin, int sLen, Record** h_Joinout,int CPU_GPU=0 );
 
+#endif /* !_OPENCL_DLL_H_ — end of duplicate-declaration guard */
+
+
+// Functions below are NOT declared in OpenCL_DLL.h, so they must always be visible.
+
+//data structure
+void CL_BuildHashTable( Record* h_R, int rLen, int intBits, Bound* h_bound );
+
+int CL_BuildTreeIndex( Record* h_Rin, int rLen, CUDA_CSSTree** tree );
+
+int CL_HashSearch( Record* h_R, int rLen, Bound* h_bound, int inBits, Record* h_S, int sLen, Record** h_Rout, 
+										  int numThread = 512 ,int CPU_GPU=0);
+
+int CL_TreeSearch( Record* h_Rin, int rLen, CUDA_CSSTree* tree, Record* h_Sin, int sLen, Record** h_Rout,int CPU_GPU=0 );
+
+//sort
+void CL_bitonicSort( Record* h_Rin, int rLen, Record* h_Rout, 
+												int numThreadPB = 128, int numBlock = 1024 ,int CPU_GPU=0);
+
+void CL_QuickSort( Record* h_Rin, int rLen, Record* h_Rout ,int CPU_GPU=0);
+
 //partition
 void CL_Partition( Record* h_Rin, int rLen, int numPart, Record* d_Rout, int* d_startHist, 
-														  int numThreadPB = -1, int numBlock = -1 ,int CPU_GPU=0);
+										  int numThreadPB = -1, int numBlock = -1 ,int CPU_GPU=0);
 
 /*
 //Interface 1: get all RIDs into an array. You need to allocate d_RIDList. 
@@ -123,4 +137,3 @@ void GPUOnly_getValueList(Record* d_Rin, int rLen, int** d_ValueList, int numThr
 void resetGPU();
  
 #endif
-

@@ -3,7 +3,7 @@
 #include <string.h>
 #include "QueryPlanNode.h"
 #include "QueryPlanTree.h"
-#include "QP_Utility.h"
+#include "../MyLib/QP_Utility.h"
 #include "time.h"
 #include "assert.h"
 #include "Database.h"

@@ -1,6 +1,7 @@
 #include "CoProcessorTest.h"
 #include "QueryPlanTree.h"
 #include "Database.h"
+#include <sched.h>
 
 Database *easedb;
 
@@ -329,6 +330,7 @@ char* OpToString(OP_MODE op,EXEC_MODE eM)
 
 void setHighPriority()
 {
-	SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_ABOVE_NORMAL);
+	struct sched_param param;
+	param.sched_priority = sched_get_priority_max(SCHED_OTHER);
 	//cout<<"setHighPriority"<<endl;
 }

@@ -1,9 +1,8 @@
 #ifndef CO_PROCESSOR_TEST_H
 #define CO_PROCESSOR_TEST_H
 
-#include "windows.h"
 #include "CoProcessor.h"
-#include "CoProcessorTest.h"
+
 
 typedef enum{
 	Q_POINT_SELECTION,

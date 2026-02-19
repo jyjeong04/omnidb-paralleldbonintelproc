@@ -1,6 +1,6 @@
 #include "CoProcessor.h"
 #include "MyThreadPoolCop.h"
-#include "CPU_Dll.h"
+#include "../MyLib/CPU_Dll.h"
 #include <vector>
 using namespace std;
 

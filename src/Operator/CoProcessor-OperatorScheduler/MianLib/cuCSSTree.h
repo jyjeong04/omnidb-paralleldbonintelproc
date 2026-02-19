@@ -1,7 +1,7 @@
-#pragma once
+#ifndef _CUCSSTREE_H_
+#define _CUCSSTREE_H_
 
-//
-//#include <QP_Utility.cu>
+#include "../MyLib/QP_Utility.h"
 
 typedef int IKeyType;
 
@@ -64,3 +64,5 @@ extern "C" {
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* _CUCSSTREE_H_ */

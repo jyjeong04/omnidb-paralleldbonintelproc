@@ -1,6 +1,6 @@
 #ifndef CSS_TREE_H_
 #define CSS_TREE_H_
-#include "common.h"
+#include "../MyLib/common.h"
 typedef int IKeyType;
 
 #define WARPS_PER_NODE		1	//saven: 2 ray:1	// Warps per node

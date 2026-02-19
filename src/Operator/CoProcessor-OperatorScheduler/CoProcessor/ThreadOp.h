@@ -2,7 +2,7 @@
 #define THREAD_OP_H
 #pragma once
 #include "CoProcessor.h"
-#include "common.h"
+#include "../MyLib/common.h"
 #include "db.h"
 /*
 we define the operator type in this file. Acutally, it corresponds to the 

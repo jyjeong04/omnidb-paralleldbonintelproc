@@ -38,13 +38,13 @@ extern "C" void DLL_EXPORT CL_setValueList(cl_mem h_ValueList, int rLen, cl_mem 
 extern "C" void DLL_EXPORT CL_RadixSortOnly(cl_mem d_Rin, int rLen,int numThread, int numBlock, int _CPU_GPU);
 extern "C" void DLL_EXPORT CL_BitonicSortOnly(cl_mem d_Rin, int rLen,cl_mem d_Rout,int numThread, int numBlock, int _CPU_GPU);
 extern "C" void DLL_EXPORT CL_getValueList( cl_mem h_Rin, int rLen, cl_mem* h_ValueList,int numThreadPB, int numBlock,int _CPU_GPU);
-int DLL_EXPORT CL_AggMaxOnly( cl_mem d_Rin, int rLen, cl_mem* d_Rout,
+extern "C" int DLL_EXPORT CL_AggMaxOnly( cl_mem d_Rin, int rLen, cl_mem* d_Rout,
 													  int numThread, int numBlock , int _CPU_GPU);
-int DLL_EXPORT CL_AggSumOnly( cl_mem d_Rin, int rLen, cl_mem* d_Rout,
+extern "C" int DLL_EXPORT CL_AggSumOnly( cl_mem d_Rin, int rLen, cl_mem* d_Rout,
 													  int numThread, int numBlock , int _CPU_GPU);
-int DLL_EXPORT CL_AggAvgOnly( cl_mem d_Rin, int rLen, cl_mem* d_Rout,
+extern "C" int DLL_EXPORT CL_AggAvgOnly( cl_mem d_Rin, int rLen, cl_mem* d_Rout,
 													  int numThread, int numBlock , int _CPU_GPU);
-int DLL_EXPORT CL_AggMinOnly( cl_mem d_Rin, int rLen, cl_mem* d_Rout,
+extern "C" int DLL_EXPORT CL_AggMinOnly( cl_mem d_Rin, int rLen, cl_mem* d_Rout,
 													  int numThread, int numBlock , int _CPU_GPU);
 
 extern "C" int DLL_EXPORT CL_smjOnly(cl_mem d_R, int rLen, cl_mem d_S, int sLen, cl_mem*  h_Joinout,int _CPU_GPU);
@@ -130,5 +130,6 @@ extern "C" int DLL_EXPORT CL_inlj( Record* h_Rin, int rLen, CUDA_CSSTree** h_tre
 extern "C" int DLL_EXPORT CL_mj( void * h_Rin, int rLen, Record* h_Sin, int sLen, Record** h_Joinout, int _CPU_GPU );
 extern "C" void DLL_EXPORT EngineStart(bool handShake,int _KernelSchedule);
 extern "C" void DLL_EXPORT EngineStop();
+extern "C" void DLL_EXPORT restore();
 #endif
 
