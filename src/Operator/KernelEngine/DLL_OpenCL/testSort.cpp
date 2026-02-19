@@ -20,8 +20,8 @@ void radixSort_int(cl_mem d_R, int rLen, int numThreadPB, int numBlock, int sort
 	cl_int stage;
 	cl_int passOfStage;
 
-	size_t global_work_size[1] = { rLen / 2};         //number of global work-items, specific to this program
-	size_t local_work_size[1] = {numThreadPB};             //work-group size
+	size_t global_work_size[1] = { static_cast<size_t>(rLen) / 2};         //number of global work-items, specific to this program
+	size_t local_work_size[1] = {static_cast<size_t>(numThreadPB)};             //work-group size
 
 	cl_getKernel("BitonicSort_kernel",kernel);
 

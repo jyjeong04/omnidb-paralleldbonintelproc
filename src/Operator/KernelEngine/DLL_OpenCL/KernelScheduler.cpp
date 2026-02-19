@@ -31,8 +31,8 @@ extern double CPUBurden;
 extern int rLen;
 extern int pLen;
 double base=rLen;
-extern CRITICAL_SECTION CPUBurdenCS;
-extern CRITICAL_SECTION GPUBurdenCS;
+extern pthread_mutex_t CPUBurdenCS;
+extern pthread_mutex_t GPUBurdenCS;
 extern int global_KernelSchedule;
 
 struct request_handler {

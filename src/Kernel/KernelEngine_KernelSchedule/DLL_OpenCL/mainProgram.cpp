@@ -4,6 +4,7 @@
 #include "KernelScheduler.h"
 #include "MidNumber.h"
 #include "MyThreadPoolCop.h"
+#include "OpenCL_DLL.h"
 #include "common.h"
 #include "scheduler.h"
 #include "testAggAfterGB.h"
@@ -90,9 +91,9 @@ int copycase = 0;
 // #define debugTony
 int rLen = 1024 * 1024 * 2;
 int pLen = 0.01 * rLen;
-int numthread = 1;
+int numthread = 4;
 int choice = 1;
-int runTime = 5;
+int runTime = 3;
 FILE *ofp;
 pthread_t h_thread;
 pthread_t h_thread1;
@@ -918,9 +919,9 @@ void EngineStop() {
 }
 // Main function
 // *********************************************************************
-int gmain(int argc, char **argv) {
-  EngineStart(0, 1);
-#if 0
+int main(int argc, char **argv) {
+  EngineStart(0, 0);
+#if 1
   int TestCounter = 0;
   for (TestCounter = 0; TestCounter < TestTime; TestCounter++) {
     printf("Test%d begin!\n", TestCounter);

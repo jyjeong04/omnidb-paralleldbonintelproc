@@ -92,8 +92,8 @@ int NINJImpl(cl_mem d_R, int rLen, cl_mem d_S, int sLen, cl_mem* d_Rout,int *ind
 	if(sLen%gridSize!=0)
 		numGrid++;
 	//printf("numBlock, %d, gridSize, %d, numGrid, %d\n",numBlock, gridSize, numGrid);
-	size_t  threads_NLJ[2]={ numThreadPerBlock, 1};
-	size_t  grid_NLJ[2]={ numBlock_X, numBlock_Y};
+	size_t  threads_NLJ[2]={ static_cast<size_t>(numThreadPerBlock), 1};
+	size_t  grid_NLJ[2]={ static_cast<size_t>(numBlock_X), static_cast<size_t>(numBlock_Y)};
 	int numResults=0;
 	//the number of results for threads
 	

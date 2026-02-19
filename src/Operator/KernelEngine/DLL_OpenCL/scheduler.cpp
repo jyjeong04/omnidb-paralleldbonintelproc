@@ -1,5 +1,6 @@
 #include "scheduler.h"
 #include "common.h"
+#include <pthread.h>
 extern double AddGPUBurden_Copy;//->initial in handshaking. fix rLen to 1024*1024
 extern double AddCPUBurden_Copy;
 extern double AddGPUBurden_Read;//->initial in handshaking. fix rLen to 1024*1024
@@ -27,10 +28,10 @@ extern int cpuburden_index;
 extern int gpuburden_index;
 extern float cpuburden[100000];
 extern float gpuburden[100000];
-extern CRITICAL_SECTION CPUBurdenCS;
-extern CRITICAL_SECTION GPUBurdenCS;
-extern CRITICAL_SECTION schedulerflag;
-extern CRITICAL_SECTION deschedulerflag;
+extern pthread_mutex_t CPUBurdenCS;
+extern pthread_mutex_t GPUBurdenCS;
+extern pthread_mutex_t schedulerflag;
+extern pthread_mutex_t deschedulerflag;
 
 /*kernel operation can be either greedy or adaptive*/
 //#define Adaptive
@@ -59,23 +60,23 @@ double inline getAddCPUBurden(const int kid,double size){
 	return AddCPUBurden[kid]/base*size;
 }
 void inline GPUBurdenINC(const double *burden){
-		EnterCriticalSection(&(GPUBurdenCS));	
+		pthread_mutex_lock(&(GPUBurdenCS));	
 		GPUBurden+=(*burden);	
-		LeaveCriticalSection(&(GPUBurdenCS));
+		pthread_mutex_unlock(&(GPUBurdenCS));
 		recordUpdate(GPUBurden,CPUBurden);
 }
 void inline CPUBurdenINC(const double *burden){
-		EnterCriticalSection(&(CPUBurdenCS));		
+		pthread_mutex_lock(&(CPUBurdenCS));		
 		CPUBurden+=(*burden);
-		LeaveCriticalSection(&(CPUBurdenCS));
+		pthread_mutex_unlock(&(CPUBurdenCS));
 		recordUpdate(GPUBurden,CPUBurden);
 }
 void inline recordUpdate(double _gBurden, double _cBurden)
 {
-	EnterCriticalSection(&(schedulerflag));	
+	pthread_mutex_lock(&(schedulerflag));	
 	gpuburden[gpuburden_index++]=(float)(_gBurden*1000);
 	cpuburden[cpuburden_index++]=(float)(_cBurden*1000);
-	LeaveCriticalSection(&(schedulerflag));
+	pthread_mutex_unlock(&(schedulerflag));
 }
 
 
@@ -144,17 +145,17 @@ void deschedule(const int preFlag, const double preBurden)
 		if(preFlag)//GPU
 			{
 				//printf("DEC GPUBurden is %lf,preBurden is %lf\n",GPUBurden,preBurden);
-				EnterCriticalSection(&(GPUBurdenCS));		
+				pthread_mutex_lock(&(GPUBurdenCS));		
 				GPUBurden-=preBurden;
-				LeaveCriticalSection(&(GPUBurdenCS));
+				pthread_mutex_unlock(&(GPUBurdenCS));
 				recordUpdate(GPUBurden,CPUBurden);
 			}
 			else
 			{
 				//printf("DEC CPUBurden is %lf,preBurden is %lf\n",CPUBurden,preBurden);
-				EnterCriticalSection(&(CPUBurdenCS));
+				pthread_mutex_lock(&(CPUBurdenCS));
 				CPUBurden-=preBurden;
-				LeaveCriticalSection(&(CPUBurdenCS));
+				pthread_mutex_unlock(&(CPUBurdenCS));
 				recordUpdate(GPUBurden,CPUBurden);
 			}
 }

@@ -1,4 +1,0 @@
---------------------Result of Alltest for type of0:----------------------
-with kernel schedule, run 10 Operator need in average :7.786600 
-Test0 end! in Wed Feb 11 17:17:40 2026
-
