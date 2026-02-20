@@ -1,6 +1,6 @@
 #include "SingularThreadOp.h"
-#include "CPU_Dll.h"
-#include "OpenCL_DLL.h"
+#include "../MyLib/CPU_Dll.h"
+#include "../TonyLib/OpenCL_DLL.h"
 
 SingularThreadOp::SingularThreadOp(OP_MODE opt)
 {

@@ -2,6 +2,17 @@
 #include "QueryPlanTree.h"
 #include "CoProcessorTest.h"
 #include "Helper.h"
+
+// Linux compatibility for Windows debug functions
+#ifdef _WIN32
+#include <crtdbg.h>
+#else
+#include <cassert>
+// Linux: _CrtCheckMemory() has no direct equivalent, use assert(1) as placeholder
+#define _CrtCheckMemory() (1)
+// Linux: _ASSERTE is equivalent to assert
+#define _ASSERTE(expr) assert(expr)
+#endif
 extern double evalautedQuery;
 extern double Query_UpCPUBurden;
 extern double Query_LoCPUBurden;
@@ -93,19 +104,27 @@ void Query_handShaking()
 						break;
 					   }
 				case 1:{
+#ifdef _WIN32
 						_ASSERTE( _CrtCheckMemory( ) );
+#endif
 						qt=Q_RANGE_SELECTION;
 						queryTest(qt,EXEC_CPU,qid);
 						queryTest(qt,EXEC_GPU,qid);
+#ifdef _WIN32
 							_ASSERTE( _CrtCheckMemory( ) );
+#endif
 						break;
 					   }
 				case 2:{
+#ifdef _WIN32
 						_ASSERTE( _CrtCheckMemory( ) );
+#endif
 						qt=Q_AGG;
 						queryTest(qt,EXEC_CPU,qid);
 						queryTest(qt,EXEC_GPU,qid);
+#ifdef _WIN32
 							_ASSERTE( _CrtCheckMemory( ) );
+#endif
 						break;
 					   }
 				case 3:{

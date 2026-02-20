@@ -1,6 +1,6 @@
 #pragma once
 #include "threadop.h"
-#include "CPU_Dll.h"
+#include "../MyLib/CPU_Dll.h"
 
 class BinaryThreadOp :
 	public ThreadOp

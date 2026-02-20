@@ -1,5 +1,5 @@
 #include "db.h"
-#include "QP_Utility.h"
+#include "../MyLib/QP_Utility.h"
 #include "string.h"
 int compareRecord (const void * a, const void * b)
 {
@@ -31,7 +31,7 @@ void linux_itoa(int value, char*  str, int radix)
 
 char* linux_strrev(char* szT)
 {
-    if ( !szT )                 // 处理传入的空�?
+    if ( !szT )                 // 处理传入的空�?
         return "";
     int i = (int)strlen(szT);
     int t = !(i%2)? 1 : 0;      // 检查串长度.

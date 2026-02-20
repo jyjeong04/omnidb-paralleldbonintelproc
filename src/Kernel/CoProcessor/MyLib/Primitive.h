@@ -3,7 +3,11 @@
 #include "stdafx.h"
 #include "QP_Utility.h"
 #include "MyThreadPool.h"
-#include "omp.h"
+#ifdef __APPLE__
+#include </opt/homebrew/opt/libomp/include/omp.h>
+#else
+#include <omp.h>
+#endif
 
 #define SAVEN_OPen_MP
 

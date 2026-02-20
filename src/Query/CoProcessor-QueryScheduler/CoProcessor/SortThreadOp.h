@@ -1,5 +1,5 @@
 #pragma once
-#include "singularthreadop.h"
+#include "SingularThreadOp.h"
 
 #include <vector>
 using namespace std;

@@ -1,6 +1,8 @@
 #include "CoProcessorTest.h"
 #include "QueryPlanTree.h"
 #include "Database.h"
+#include <sched.h>
+#include <pthread.h>
 
 Database *easedb;
 
@@ -329,6 +331,15 @@ char* OpToString(OP_MODE op,EXEC_MODE eM)
 
 void setHighPriority()
 {
+#ifdef _WIN32
 	SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_ABOVE_NORMAL);
+#else
+	// Linux: use nice or pthread scheduling priority
+	// For compatibility, just attempt to raise priority slightly
+	struct sched_param param;
+	param.sched_priority = sched_get_priority_max(SCHED_OTHER);
+	// Note: sched_setscheduler may fail without root, which is OK
+	// pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
+#endif
 	//cout<<"setHighPriority"<<endl;
 }

@@ -3,7 +3,7 @@
 #include "common.h"
 #include "CC_CSSTree.h"
 
-#define NUM_CORE_PER_CPU 4
+#define NUM_CORE_PER_CPU 8
 
 //void generateRand(Record *R, int max, int rLen, int seed);
 //for testing only

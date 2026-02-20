@@ -1,9 +1,9 @@
 #include "common.h"
 #include "Helper.h"
-#include <SDKCommon.hpp>
-#include <SDKFile.hpp>
-#include <SDKCommon.hpp>
-#include <SDKApplication.hpp>
+#include "SDKCommon.hpp"
+#include "SDKFile.hpp"
+#include "SDKCommon.hpp"
+#include "SDKApplication.hpp"
 #include "KernelScheduler.h"
 // OpenCL Vars---------0 for CPU, 1 for GPU
 extern cl_context Context;        // OpenCL context

@@ -2,7 +2,11 @@
 #define JOINS_H
 #include "stdafx.h"
 #include "QP_Utility.h"
-#include "omp.h"
+#ifdef __APPLE__
+#include </opt/homebrew/opt/libomp/include/omp.h>
+#else
+#include <omp.h>
+#endif
 #include "CC_CSSTree.h"
 #include <iostream>
 using namespace std;

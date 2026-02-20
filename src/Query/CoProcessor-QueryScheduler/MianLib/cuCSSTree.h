@@ -1,7 +1,10 @@
 #pragma once
 
-//
-//#include <QP_Utility.cu>
+#include "../MyLib/QP_Utility.h"
+
+// If TonyLib/CSSTree.h is already included, skip redundant type definitions
+// to avoid redefinition conflicts. The struct layouts are identical.
+#ifndef CSS_TREE_H_
 
 typedef int IKeyType;
 
@@ -45,12 +48,15 @@ extern "C" {
 	//#endregion
 
 	//#region Indexing Tree Types
+	// Only define if not already defined by OpenCL_DLL.h or CSSTree.h
+	#if !defined(_GPU_DLL_H_) && !defined(IDirectoryNode)
 	typedef struct {
 		IKeyType keys[TREE_NODE_SIZE];
 	} IDirectoryNode;	
 	typedef struct {
 		Record records[TREE_NODE_SIZE];
 	} IDataNode;
+	#endif
 	//#endregion
 
 	//#region Declaration of functions
@@ -64,3 +70,5 @@ extern "C" {
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* !CSS_TREE_H_ */

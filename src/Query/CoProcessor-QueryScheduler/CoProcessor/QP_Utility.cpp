@@ -1,11 +1,11 @@
-#include "QP_Utility.h"
+#include "../MyLib/QP_Utility.h"
 #include <stdlib.h>
-#include <SDKCommon.hpp>
-#include <SDKFile.hpp>
-#include <SDKCommon.hpp>
-#include <SDKApplication.hpp>
-#include "CL\cl.h"
-#include "OpenCL_DLL.h"
+#include "SDKCommon.hpp"
+#include "SDKFile.hpp"
+#include "SDKCommon.hpp"
+#include "SDKApplication.hpp"
+#include "CL/cl.h"
+#include "../TonyLib/OpenCL_DLL.h"
 void Kernel_bufferchecking(cl_mem R_in,size_t size){
 	printf("Host buffer checking..size is %d",size);
 	void * R_out;

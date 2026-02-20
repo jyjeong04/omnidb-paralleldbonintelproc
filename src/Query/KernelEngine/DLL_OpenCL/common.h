@@ -1,4 +1,4 @@
-#include "CL\cl.h"
+#include "CL/cl.h"
 #include <stdio.h>
 #include "string.h"
 #include <cstdlib>
@@ -6,9 +6,9 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <SDKFile.hpp>
-#include <SDKCommon.hpp>
-#include <SDKApplication.hpp>
+#include "SDKFile.hpp"
+#include "SDKCommon.hpp"
+#include "SDKApplication.hpp"
 #include "verctor_types.h"
 #define _tonyPrint_(STR) printf(STR)
 //#define _tonyPrint_(STR)

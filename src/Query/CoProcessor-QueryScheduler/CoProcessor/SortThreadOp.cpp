@@ -1,5 +1,5 @@
 #include "SortThreadOp.h"
-#include "CPU_Dll.h"
+#include "../MyLib/CPU_Dll.h"
 
 #include "CoProcessor.h"
 

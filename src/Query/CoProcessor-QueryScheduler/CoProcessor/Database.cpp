@@ -2,14 +2,14 @@
 #include "stdlib.h"
 #include "stdio.h"
 #include "math.h"
-#include "QP_Utility.h"
-#include "LinkedList.h"
+#include "../MyLib/QP_Utility.h"
+#include "../MyLib/LinkedList.h"
 #include "CoProcessor.h"
-#include "CPU_Dll.h"
+#include "../MyLib/CPU_Dll.h"
 #include "Helper.h"
 #include <iostream>
 #include "Helper.h"
-#include "OpenCL_DLL.h"
+#include "../TonyLib/OpenCL_DLL.h"
 using namespace std;
 
 extern int Query_rLen;

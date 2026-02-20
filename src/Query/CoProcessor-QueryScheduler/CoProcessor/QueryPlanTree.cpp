@@ -3,7 +3,14 @@
 #include "stdlib.h"
 #include "stdio.h"
 #include "string.h"
+#ifdef _WIN32
 #include "windows.h"
+#else
+#include <cassert>
+// Linux compatibility for Windows debug functions
+#define _CrtCheckMemory() (1)
+#define _ASSERTE(expr) assert(expr)
+#endif
 #include "Helper.h"
 #define ADA_START_TYPE (GROUP_BY)
 #define ADA_END_TYPE (JOIN_HJ)
@@ -20,7 +27,9 @@ void QueryPlanTree::buildTree(char * str)
 QueryPlanTree::~QueryPlanTree()
 {
 	////printf("Some one call to delete tree\n");
+#ifdef _WIN32
 	_ASSERTE( _CrtCheckMemory( ) );
+#endif
 	int i=0;
 	for(i=0;i<totalNumNode;i++)
 	{

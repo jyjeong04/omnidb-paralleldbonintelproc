@@ -25,7 +25,7 @@ public:
 		hasLock=false;
 	}
 	~QueryPlanTree();
-	QueryPlanNode * QueryPlanTree::construct_plan_tree(char * str, int * index);
+	QueryPlanNode * construct_plan_tree(char * str, int * index);
 	QueryPlanNode * root;
 	ThreadOp* getNextOp(EXEC_MODE eM);
 	vector<QueryPlanNode *> nodeVec;

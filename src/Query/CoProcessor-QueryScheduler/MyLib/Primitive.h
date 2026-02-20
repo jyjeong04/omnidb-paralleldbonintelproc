@@ -3,7 +3,11 @@
 #include "stdafx.h"
 #include "QP_Utility.h"
 #include "MyThreadPool.h"
-#include "omp.h"
+#ifdef __APPLE__
+#include </opt/homebrew/opt/libomp/include/omp.h>
+#else
+#include <omp.h>
+#endif
 
 #define SAVEN_OPen_MP
 
@@ -91,6 +95,7 @@ long int reduce_openmp( Record* Rin, int Query_rLen, int numThread, int OPERATOR
 int filter_openmp( Record* Rin, int Query_rLen, int lowerKey, int higherKey, Record** Rout, int numThread );
 
 //uniform interface
+#include "mapImpl.h"
 
 template <class T> void mapImpl(Record *Rin, int Query_rLen, mapper_t mapFunc, void* para, T* Rout, int numThread)
 {

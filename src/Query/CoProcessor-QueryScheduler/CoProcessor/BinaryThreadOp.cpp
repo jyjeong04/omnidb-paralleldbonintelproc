@@ -1,7 +1,7 @@
 #include "BinaryThreadOp.h"
-#include "CPU_Dll.h"
+#include "../MyLib/CPU_Dll.h"
 #include "CoProcessor.h"
-#include "OpenCL_DLL.h"
+#include "../TonyLib/OpenCL_DLL.h"
 BinaryThreadOp::BinaryThreadOp(OP_MODE opt)
 {
 	optType=opt;

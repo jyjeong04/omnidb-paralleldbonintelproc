@@ -1,7 +1,7 @@
 #pragma once
 
 //
-//#include <QP_Utility.cu>
+#include "../MyLib/QP_Utility.h"
 
 // If TonyLib/CSSTree.h is already included, skip redundant type definitions
 // to avoid redefinition conflicts. The struct layouts are identical.

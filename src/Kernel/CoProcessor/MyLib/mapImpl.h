@@ -3,7 +3,11 @@
 #include "stdafx.h"
 #include "MyThreadPool.h"
 #include "Primitive.h"
-#include "omp.h"
+#ifdef __APPLE__
+#include </opt/homebrew/opt/libomp/include/omp.h>
+#else
+#include <omp.h>
+#endif
 #include "math.h"
 
 

@@ -3,8 +3,8 @@
 //#pragma once
 #include "hash.h"
 #include "db.h"
-#include "CPU_Dll.h"
-#include "OpenCL_DLL.h"
+#include "../MyLib/CPU_Dll.h"
+#include "../TonyLib/OpenCL_DLL.h"
 extern int Query_rLen;
 /*
 Since we are using column-based model, if a table TT(a,b,c), so we store them into 
