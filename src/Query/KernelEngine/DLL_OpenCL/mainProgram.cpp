@@ -83,7 +83,7 @@ float cpuburden[10000000];
 float gpuburden[10000000];
 double GPUBurden;
 double CPUBurden;
-int TestTime = 1;
+int TestTime = 3;
 
 int kernelcase = 0;
 int copycase = 0;
@@ -91,9 +91,9 @@ int copycase = 0;
 // #define debugTony
 int rLen = 1024 * 1024 * 2;
 int pLen = 0.01 * rLen;
-int numthread = 1;
+int numthread = 4;
 int choice = 1;
-int runTime = 1;
+int runTime = 3;
 FILE *ofp;
 pthread_t h_thread;
 pthread_t h_thread1;
@@ -101,7 +101,7 @@ pthread_t h_thread2;
 pthread_t h_thread3;
 pthread_t h_thread4;
 int global_KernelSchedule = 0;
-volatile int thread_running = 1; // Flag for thread control
+volatile int thread_running = 0; // Flag for thread control
 using namespace std;
 void Cleanup(int iExitCode);
 char *dir = "";
@@ -655,7 +655,12 @@ void handShaking() {
   fprintf(ofp, "UpCPUBurden is %lf\n", UpCPUBurden);
   fclose(ofp);
 }
-
+void inline recordUpdate(double _gBurden, double _cBurden) {
+  pthread_mutex_lock(&schedulerflag);
+  gpuburden[gpuburden_index++] = (float)(_gBurden * 1000);
+  cpuburden[cpuburden_index++] = (float)(_cBurden * 1000);
+  pthread_mutex_unlock(&schedulerflag);
+}
 void *burdenMeasure(void *lpParam) {
   while (thread_running) {
     usleep(1000); // 1ms sleep (usleep takes microseconds)
@@ -868,7 +873,7 @@ void EngineStart(bool handShake, int _KernelSchedule) {
   cl_init(CL_DEVICE_TYPE_GPU);
   cl_init_common();
 
-  cl_prepareProgram("primitive.cl", ".");
+  cl_prepareProgram("primitive.cl", dir);
   if (handShake) {
     printf("Now start handShaking!Please wait!\n");
     handShaking();
@@ -877,6 +882,7 @@ void EngineStart(bool handShake, int _KernelSchedule) {
     printf("warning! hand shake skipped!\n");
     readFromFile();
   }
+  thread_running = 1;
   pthread_create(&h_thread, NULL, burdenMeasure, NULL);
   usleep(200);
   pthread_create(&h_thread1, NULL, burdenMeasure, NULL);
@@ -888,6 +894,7 @@ void EngineStart(bool handShake, int _KernelSchedule) {
   pthread_create(&h_thread4, NULL, burdenMeasure, NULL);
 }
 void EngineStop() {
+  thread_running = 0; // signal burden threads to exit
   pthread_join(h_thread, NULL);
   pthread_join(h_thread1, NULL);
   pthread_join(h_thread2, NULL);
@@ -919,7 +926,7 @@ void EngineStop() {
 }
 // Main function
 // *********************************************************************
-int gmain(int argc, char **argv) {
+int main(int argc, char **argv) {
   // readFromFile();
   EngineStart(0, 1);
   // usedtotalGlobalMemory[0]=0;
@@ -949,7 +956,7 @@ int gmain(int argc, char **argv) {
     for (type = 0; type < 1; type++) {
       FILE *ofp;
       char outputFilename[50];
-      sprintf(outputFilename, "testscript%dof%d.cpp", TestCounter, type);
+      sprintf(outputFilename, "testscript%dof%d.txt", TestCounter, type);
       ofp = fopen(outputFilename, "w");
 
       if (ofp == NULL) {
@@ -970,10 +977,16 @@ int gmain(int argc, char **argv) {
         sum += t;
       }
 
-      // fprintf(ofp,"--------------------Result of Alltest for type of
-      // %d:----------------------\n",type); fprintf(ofp,"with kernel schedule,
-      // run 10 Operator need in average :%lf \n",sum/runTime);
-      // fprintf(ofp,"Test%d end! in %s\n",TestCounter,ctime (&rawtime));
+      fprintf(ofp,
+              "--------------------Result of Alltest for type "
+              "of%d:----------------------\n",
+              type);
+      fprintf(ofp,
+              "with kernel schedule, run 10 Operator need in average :%lf \n",
+              sum / runTime);
+      time_t rawtime;
+      time(&rawtime);
+      fprintf(ofp, "Test%d end! in %s\n", TestCounter, ctime(&rawtime));
       fclose(ofp);
     }
 

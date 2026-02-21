@@ -66,6 +66,9 @@ int pickQuerySmart(int threadid, Query_stat *gQstat, int numQuery) {
       break;
     }
 
+  if (result == -1)
+    return -1;
+
 /*QUERY SCHEDULER*/
 #ifdef Greedy
   if ((Query_CPUBurden + getAddCPUBurden(i)) <
@@ -108,7 +111,7 @@ void* tp_QueryThread(void *lpParam) {
   tree.execute(eM);
   int len = tree.planStatus->numResultColumn * tree.planStatus->numResultRow;
 deschedule:
-  if (eM = EXEC_CPU) {
+  if (eM == EXEC_CPU) {
     CPUBurdenDEC(getAddCPUBurden(pData->id));
   } else {
     GPUBurdenDEC(getAddGPUBurden(pData->id));

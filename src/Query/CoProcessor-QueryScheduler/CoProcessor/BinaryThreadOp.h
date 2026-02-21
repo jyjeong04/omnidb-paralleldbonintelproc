@@ -1,5 +1,5 @@
 #pragma once
-#include "threadop.h"
+#include "ThreadOp.h"
 #include "../MyLib/CPU_Dll.h"
 
 class BinaryThreadOp :

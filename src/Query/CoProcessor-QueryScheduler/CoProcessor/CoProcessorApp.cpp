@@ -47,15 +47,12 @@ int main(int argc, char **argv)
 	Query_handShaking();
 	printf("handshaking finished!\n\n\n");
 	restore();
-	pthread_mutex_lock(&(Query_GPUBurdenCS));
-	pthread_mutex_lock(&(Query_CPUBurdenCS));
-	pthread_mutex_lock(&(preEMCS));
 	int choice;
 	QUERY_TYPE qt;
 	initDB2("RS.conf",TEST_MAX);
 	QUERY_TYPE qT1=Q_RANGE_SELECTION;
 	QUERY_TYPE qT2=Q_HJ;
-	testQueryProcessor(qT1,qT2,numQueries,numThread);	
+	testQueryProcessor(qT1,qT2,numQueries,numThread);
 	EngineStop();
 	//int i;
 	//int j;
@@ -63,12 +60,12 @@ int main(int argc, char **argv)
 	/*for(i=0;i<20;i++){
 		for(j=0;j<10;j++){
 			result+=t[i][j];
-			fprintf(Query_ofp,"query%d,node%d,time is %lf\n",i,j,t[i][j]);	
+			fprintf(Query_ofp,"query%d,node%d,time is %lf\n",i,j,t[i][j]);
 		}
 	}*/
 	//	fprintf(Query_ofp,"Query schedule time spend is %lf",result);
-		pthread_mutex_destroy(&(Query_GPUBurdenCS));
-		pthread_mutex_destroy(&(Query_CPUBurdenCS));
-		pthread_mutex_destroy(&(preEMCS));
+	pthread_mutex_destroy(&(Query_GPUBurdenCS));
+	pthread_mutex_destroy(&(Query_CPUBurdenCS));
+	pthread_mutex_destroy(&(preEMCS));
 	return 0;
 }

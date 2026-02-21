@@ -8,6 +8,7 @@
 #include <crtdbg.h>
 #else
 #include <cassert>
+#include <sys/stat.h>
 // Linux: _CrtCheckMemory() has no direct equivalent, use assert(1) as placeholder
 #define _CrtCheckMemory() (1)
 // Linux: _ASSERTE is equivalent to assert
@@ -88,7 +89,14 @@ void Query_handShaking()
 	FILE *Query_ofp;
 	char outputFilename[50];
 	sprintf(outputFilename, "./Output/QuerySpecification.list");
+#ifdef __linux__
+	{ mkdir("./Output", 0755); (void)0; }
+#endif
+	/* Overwrite existing file: clear all previous data and write from scratch ("w"). */
 	Query_ofp = fopen(outputFilename, "w");
+	if (!Query_ofp) {
+		fprintf(stderr, "Warning: could not open %s for writing (handshake output skipped)\n", outputFilename);
+	}
 	int qid;
 	QUERY_TYPE qt;
 	initDB2("RS.conf",TEST_MAX);
@@ -194,9 +202,11 @@ void Query_handShaking()
 	for(i=0;i<12;i++){
 		if(RunInCPU[i]!=0){
 			Query_SpeedupGPUOverCPU[i]=RunInCPU[i]/RunInGPU[i];
-			fprintf(Query_ofp,"Query_SpeedupGPUOverCPU %d is %lf\n",i,Query_SpeedupGPUOverCPU[i]);
-			fprintf(Query_ofp,"RunInCPU %d is %lf\n",i,RunInCPU[i]);
-			fprintf(Query_ofp,"RunInGPU %d is %lf\n",i,RunInGPU[i]);
+			if (Query_ofp) {
+				fprintf(Query_ofp,"Query_SpeedupGPUOverCPU %d is %lf\n",i,Query_SpeedupGPUOverCPU[i]);
+				fprintf(Query_ofp,"RunInCPU %d is %lf\n",i,RunInCPU[i]);
+				fprintf(Query_ofp,"RunInGPU %d is %lf\n",i,RunInGPU[i]);
+			}
 			sortSpeedUp[counter]=Query_SpeedupGPUOverCPU[i];
 			sortCPUBurden[counter]=RunInCPU[i];
 			sortGPUBurden[counter]=RunInGPU[i];
@@ -209,10 +219,10 @@ void Query_handShaking()
 	/*set speed threshold*/
 	//Query_LothresholdForGPUApp=_f(sortSpeedUp,0,counter-1,(int)(counter*20/58));//->set lothreshold to be the first 20 max,0-20 treat as GPU faster
 	Query_LothresholdForGPUApp=sortSpeedUp[(int)(counter*35/58+1)];
-	fprintf(Query_ofp,"Query_LothresholdForGPUApp is %lf\n",Query_LothresholdForGPUApp);
+	if (Query_ofp) fprintf(Query_ofp,"Query_LothresholdForGPUApp is %lf\n",Query_LothresholdForGPUApp);
 	//Query_LothresholdForCPUApp=_f(sortSpeedUp,0,counter-1,(int)(counter*25/58+1));//->set lothreshold to be the first 25 max,25-58 treat as CPU faster
 	Query_LothresholdForCPUApp=sortSpeedUp[(int)(counter*25/58)];
-	fprintf(Query_ofp,"Query_LothresholdForCPUApp is %lf\n",Query_LothresholdForCPUApp);
+	if (Query_ofp) fprintf(Query_ofp,"Query_LothresholdForCPUApp is %lf\n",Query_LothresholdForCPUApp);
 	//20-25 as in middle.
 	/*set GPUburden threshold*/
 	//Query_LoGPUBurden=_f(sortGPUBurden,0,counter-1,(int)(counter*40/58+1));//->set lothreshold as first 40 max.
@@ -220,33 +230,35 @@ void Query_handShaking()
 	//printf("Query_LoGPUBurden is %lf\n",Query_LoGPUBurden);
 	//Query_UpGPUBurden=_f(sortGPUBurden,0,counter-1,(int)(counter*10/58));//->set UPthreshold as first 10 max.
 	Query_UpGPUBurden=(sortGPUBurden[(int)(counter*35/58+1)]+sortGPUBurden[(int)(counter*45/58+1)])/2;
-	fprintf(Query_ofp,"Query_UpGPUBurden is %lf\n",Query_UpGPUBurden);
+	if (Query_ofp) fprintf(Query_ofp,"Query_UpGPUBurden is %lf\n",Query_UpGPUBurden);
 	/*set CPUburden threshold*/
 	Query_LoCPUBurden=(sortCPUBurden[0]+sortCPUBurden[(int)(counter*30/58)])/2;
-	fprintf(Query_ofp,"Query_LoCPUBurden is %lf\n",Query_LoCPUBurden);
+	if (Query_ofp) fprintf(Query_ofp,"Query_LoCPUBurden is %lf\n",Query_LoCPUBurden);
 	
 	Query_UpCPUBurden=(sortCPUBurden[(int)(counter*35/58+1)]+sortCPUBurden[(int)(counter*45/58+1)])/2;
-	fprintf(Query_ofp,"Query_UpCPUBurden is %lf\n",Query_UpCPUBurden);
+	if (Query_ofp) fprintf(Query_ofp,"Query_UpCPUBurden is %lf\n",Query_UpCPUBurden);
 
 	int w;
-	for(w=0;w<counter;w++){
-		fprintf(Query_ofp,"sortSpeedUp%d is %lf\n",w,sortSpeedUp[w]);
+	if (Query_ofp) {
+		for(w=0;w<counter;w++){
+			fprintf(Query_ofp,"sortSpeedUp%d is %lf\n",w,sortSpeedUp[w]);
+		}
+		fprintf(Query_ofp,"----------------------------------\n\n");
+		for(w=0;w<counter;w++){
+			fprintf(Query_ofp,"sortCPUBurden%d is %lf\n",w,sortCPUBurden[w]);
+		}
+		fprintf(Query_ofp,"----------------------------------\n\n");
+		for(w=0;w<counter;w++){
+			fprintf(Query_ofp,"sortGPUBurden%d is %lf\n",w,sortGPUBurden[w]);
+		}
+		fprintf(Query_ofp,"Final decision\n\n");
+		fprintf(Query_ofp,"Query_LothresholdForGPUApp is %lf\n",Query_LothresholdForGPUApp);
+		fprintf(Query_ofp,"Query_LothresholdForCPUApp is %lf\n",Query_LothresholdForCPUApp);
+		fprintf(Query_ofp,"Query_LoGPUBurden is %lf\n",Query_LoGPUBurden);
+		fprintf(Query_ofp,"Query_UpGPUBurden is %lf\n",Query_UpGPUBurden);
+		fprintf(Query_ofp,"Query_LoCPUBurden is %lf\n",Query_LoCPUBurden);
+		fprintf(Query_ofp,"Query_UpCPUBurden is %lf\n",Query_UpCPUBurden);
+		fclose(Query_ofp);
 	}
-	fprintf(Query_ofp,"----------------------------------\n\n");
-	for(w=0;w<counter;w++){
-		fprintf(Query_ofp,"sortCPUBurden%d is %lf\n",w,sortCPUBurden[w]);
-	}
-	fprintf(Query_ofp,"----------------------------------\n\n");
-	for(w=0;w<counter;w++){
-		fprintf(Query_ofp,"sortGPUBurden%d is %lf\n",w,sortGPUBurden[w]);
-	}
-	fprintf(Query_ofp,"Final decision\n\n");
-	fprintf(Query_ofp,"Query_LothresholdForGPUApp is %lf\n",Query_LothresholdForGPUApp);
-	fprintf(Query_ofp,"Query_LothresholdForCPUApp is %lf\n",Query_LothresholdForCPUApp);
-	fprintf(Query_ofp,"Query_LoGPUBurden is %lf\n",Query_LoGPUBurden);
-	fprintf(Query_ofp,"Query_UpGPUBurden is %lf\n",Query_UpGPUBurden);
-	fprintf(Query_ofp,"Query_LoCPUBurden is %lf\n",Query_LoCPUBurden);
-	fprintf(Query_ofp,"Query_UpCPUBurden is %lf\n",Query_UpCPUBurden);
-	fclose(Query_ofp);
 
 }
