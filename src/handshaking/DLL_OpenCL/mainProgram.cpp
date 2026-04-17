@@ -36,6 +36,14 @@ cl_ulong usedtotalGlobalMemory[2]; /**< Max global memory used */
 pthread_mutex_t CPUBurdenCS = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t GPUBurdenCS = PTHREAD_MUTEX_INITIALIZER;
 
+// ---- Prefetching via Device Fission ----
+cl_device_id PrefetchSubDevice = NULL; // 1-CU sub-device for prefetching
+cl_device_id MainCPUSubDevice = NULL;  // Remaining CUs sub-device
+cl_command_queue PrefetchCommandQueue =
+    NULL;                  // Dedicated prefetch command queue
+int g_prefetchEnabled = 0; // 1 = prefetching active
+int g_prefetchWASSize = 0; // Work-ahead set size (auto-configured)
+
 pthread_mutex_t schedulerflag = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t deschedulerflag = PTHREAD_MUTEX_INITIALIZER;
 // cl_kernel Kernel[2];             // OpenCL kernel---------------->should been
@@ -87,7 +95,7 @@ int kernelcase = 0;
 int copycase = 0;
 
 // #define debugTony
-int rLen = 1024 * 1024 * 2;
+int rLen = 16 * 1024 * 1024;
 int pLen = 0.01 * rLen;
 int numthread = 1;
 int choice = 1;
@@ -275,7 +283,7 @@ void handShaking() {
   int CPU_GPU = 0;
   int kid;
   cl_kernel testkernel;
-  for (kid = 0; kid < 51; kid++) {
+  for (kid = 20; kid < 51; kid++) {
     for (CPU_GPU = 0; CPU_GPU < 2; CPU_GPU++) {
       printf("CPU_GPU:%d, KID:%d\n", CPU_GPU, kid);
       switch (kid) {
@@ -849,13 +857,22 @@ void readFromFile() {
     }
   }
 }
-void EngineStart(bool handShake, int _KernelSchedule) {
+void EngineStart(bool handShake, int _KernelSchedule, int prefetching) {
   global_KernelSchedule = _KernelSchedule;
+  g_prefetchEnabled = prefetching;
   // pthread_mutex_t already initialized with PTHREAD_MUTEX_INITIALIZER
   // No need for explicit initialization
   cl_init(CL_DEVICE_TYPE_CPU);
   cl_init(CL_DEVICE_TYPE_GPU);
   cl_init_common();
+
+  // ---- Prefetching: Device Fission ----
+  // When prefetching flag == 1, split the CPU device to dedicate
+  // one CU as a prefetch helper thread (per paper Section 3).
+  if (g_prefetchEnabled) {
+    printf("[Prefetch] Prefetching enabled. Initializing device fission...\n");
+    cl_init_prefetch();
+  }
 
   cl_prepareProgram((char *)"primitive.cl", dir);
   if (handShake) {
@@ -872,6 +889,13 @@ void EngineStart(bool handShake, int _KernelSchedule) {
 void EngineStop() {
   thread_running = 0;
   pthread_join(h_thread, NULL);
+
+  // ---- Prefetch cleanup ----
+  if (g_prefetchEnabled) {
+    cl_cleanup_prefetch();
+    g_prefetchEnabled = 0;
+  }
+
   pthread_mutex_destroy(&GPUBurdenCS);
   pthread_mutex_destroy(&CPUBurdenCS);
   pthread_mutex_destroy(&schedulerflag);
@@ -895,14 +919,18 @@ void EngineStop() {
 // Main function
 // *********************************************************************
 int main(int argc, char **argv) {
+  // Default: prefetching enabled (flag=1)
+  int prefetching = 1;
   if (argc == 1) { // do not provide anything additional attribute.
-    EngineStart(1, 0);
+    EngineStart(1, 0, prefetching);
   } else {
-    // int i;
-    // for(i=1;i<argc;i++)
-    // cout << argv[i] << "\n";
+    // argv[1] = kernel source directory
     dir = argv[1];
-    EngineStart(1, 0);
+    // argv[2] = optional prefetching flag (0 or 1)
+    if (argc >= 3) {
+      prefetching = atoi(argv[2]);
+    }
+    EngineStart(1, 0, prefetching);
   }
   EngineStop();
 }

@@ -19,7 +19,7 @@ INCLUDES = -I./CoProcessor -I./MyLib -I./TonyLib -I./MianLib $(OPENCL_CFLAGS)
 # Libraries
 # Link against KernelEngine static library (single executable, no .so needed)
 # Use --whole-archive to pull in all symbols from static lib
-LIBS = -L$(KERNEL_ENGINE_DIR) -Wl,--whole-archive -lomnidb_opencl -Wl,--no-whole-archive $(OPENCL_LIBS) -lpthread -lm -lgomp
+LIBS = -L$(KERNEL_ENGINE_DIR) -lomnidb_opencl_nomain $(OPENCL_LIBS) -lpthread -lm -lgomp
 
 # Build directory
 BUILD_DIR = build
@@ -60,8 +60,8 @@ TARGET = coprocessor_bin
 all: $(TARGET)
 
 # Build executable (depends on static lib)
-$(TARGET): $(OBJECTS) $(KERNEL_ENGINE_DIR)/libomnidb_opencl.a
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
+$(TARGET): $(OBJECTS) $(KERNEL_ENGINE_DIR)/libomnidb_opencl_nomain.a
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJECTS) $(LIBS)
 	@echo "Build complete: $(TARGET) (single executable, no .so needed)"
 
 # Create build directories
@@ -75,8 +75,10 @@ $(BUILD_DIR)/CoProcessor/%.o: CoProcessor/%.cpp | $(BUILD_DIR)/CoProcessor
 # Build the KernelEngine static library first
 kernel-engine: $(KERNEL_ENGINE_DIR)/libomnidb_opencl.a
 
-$(KERNEL_ENGINE_DIR)/libomnidb_opencl.a:
+$(KERNEL_ENGINE_DIR)/libomnidb_opencl_nomain.a:
 	$(MAKE) -C $(KERNEL_ENGINE_DIR) static
+	cp $(KERNEL_ENGINE_DIR)/libomnidb_opencl.a $(KERNEL_ENGINE_DIR)/libomnidb_opencl_nomain.a
+	ar d $(KERNEL_ENGINE_DIR)/libomnidb_opencl_nomain.a mainProgram.o
 
 # Build everything from scratch
 full-build: kernel-engine all

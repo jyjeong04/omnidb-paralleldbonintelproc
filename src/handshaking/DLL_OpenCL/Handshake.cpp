@@ -6,7 +6,14 @@
 #include "testSplit.h"
 #include <cassert> // Include before common.h to ensure assert is defined
 
-extern cl_context Context; // OpenCL context
+// ---- Prefetching globals ----
+extern int g_prefetchEnabled;
+extern int g_prefetchWASSize;
+
+extern cl_context Context;                    // OpenCL context
+extern cl_command_queue CommandQueue[2];      // OpenCL command queues
+extern cl_command_queue PrefetchCommandQueue; // WAS prefetch queue
+extern cl_program Program;                    // OpenCL program
 extern double
     AddGPUBurden_Copy; //->initial in handshaking. fix rLen to 1024*1024
 extern double AddCPUBurden_Copy;
@@ -779,16 +786,85 @@ void filterImpl_map_kernel_handshake(int _HandShakeCPU_GPU,
   int runSize = rLen / numRun;
   from = 0;
   to = runSize;
-  int smallKey = rand() % 100;
-  int largeKey = smallKey;
+  int smallKey = rand() % TEST_MAX;
+  int largeKey = smallKey + 20000000;
   int beginPos = 0;
   int timer = DLL_genTimer(kid);
-  for (i = 0; i < Count; i++) {
+
+  // WAS 버퍼 할당
+  int wassize = g_prefetchEnabled ? g_prefetchWASSize * 4 : 0;
+  printf("was size: %d\n", wassize);
+  size_t wasEntrySize = 4 * sizeof(cl_ulong); // 32 bytes
+  cl_mem was_buffer = NULL;
+  cl_mem dummy_buffer = NULL;
+  if (wassize > 0) {
+    cl_int err;
+    was_buffer = clCreateBuffer(Context, CL_MEM_READ_WRITE,
+                                wassize * wasEntrySize, NULL, &err);
+    dummy_buffer = clCreateBuffer(Context,
+                                  CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR,
+                                  64, NULL, &err);
+    if (err == CL_SUCCESS) {
+      void *dmap = clEnqueueMapBuffer(
+          CommandQueue[_HandShakeCPU_GPU], dummy_buffer, CL_TRUE, CL_MAP_WRITE,
+          0, 64, 0, NULL, NULL, &err);
+      if (err == CL_SUCCESS && dmap) {
+        memset(dmap, 0, 64);
+        clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                                dmap, 0, NULL, NULL);
+        clFinish(CommandQueue[_HandShakeCPU_GPU]);
+      }
+    }
+    // was_buffer를 dummy_addr로 초기화
+    cl_ulong *wmap = (cl_ulong *)clEnqueueMapBuffer(
+        CommandQueue[_HandShakeCPU_GPU], was_buffer, CL_TRUE, CL_MAP_WRITE, 0,
+        wassize * wasEntrySize, 0, NULL, NULL, &err);
+    if (err == CL_SUCCESS && wmap) {
+      void *dmap2 = clEnqueueMapBuffer(
+          CommandQueue[_HandShakeCPU_GPU], dummy_buffer, CL_TRUE, CL_MAP_READ,
+          0, 8, 0, NULL, NULL, &err);
+      cl_ulong dummyVal = (cl_ulong)(uintptr_t)dmap2;
+      if (dmap2)
+        clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                                dmap2, 0, NULL, NULL);
+      for (int j = 0; j < wassize; j++) {
+        wmap[j * 4 + 0] = dummyVal; // p1
+        wmap[j * 4 + 1] = dummyVal; // p2
+        wmap[j * 4 + 2] = (cl_ulong)-1; // state1
+        wmap[j * 4 + 3] = (cl_ulong)-1; // state2
+      }
+      clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], was_buffer, wmap,
+                              0, NULL, NULL);
+      clFinish(CommandQueue[_HandShakeCPU_GPU]);
+    }
+  }
+
+  // WAS_kernel 시작 (helper thread on prefetch CU)
+  cl_kernel wasKernel = NULL;
+  if (wassize > 0 && was_buffer && dummy_buffer && PrefetchCommandQueue) {
+    cl_int kerr;
+    wasKernel = clCreateKernel(Program, "WAS_kernel", &kerr);
+    if (kerr == CL_SUCCESS) {
+      clSetKernelArg(wasKernel, 0, sizeof(cl_mem), (void *)&was_buffer);
+      clSetKernelArg(wasKernel, 1, sizeof(cl_int), (void *)&wassize);
+      clSetKernelArg(wasKernel, 2, sizeof(cl_mem), (void *)&dummy_buffer);
+      size_t wasGlobal = 1, wasLocal = 1;
+      kerr = clEnqueueNDRangeKernel(PrefetchCommandQueue, wasKernel, 1, NULL,
+                                    &wasGlobal, &wasLocal, 0, NULL, NULL);
+      clFlush(PrefetchCommandQueue);
+    }
+  }
+
+  int selectionCount = 15;
+  for (i = 0; i < selectionCount; i++) {
 
     DLL_getTimer(timer);
-    size_t numThreadsPerBlock_x = 64;
-    size_t globalWorkingSetSize = 32 * 64;
+    size_t numThreadsPerBlock_x = 256;
+    size_t globalWorkingSetSize = 256 * 512;
     cl_getKernel("filterImpl_map_kernel", _HandShakeKernel);
+
+    smallKey = rand() % TEST_MAX;
+    largeKey = smallKey + 20000000;
 
     // Set the Argument values
     cl_int ciErr1 =
@@ -805,6 +881,13 @@ void filterImpl_map_kernel_handshake(int _HandShakeCPU_GPU,
                              (void *)&largeKey);
     ciErr1 |=
         clSetKernelArg((*_HandShakeKernel), 6, sizeof(cl_mem), (void *)&D3);
+    // WAS 추가 인자 (arg 7-9)
+    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 7, sizeof(cl_mem),
+                             (void *)&was_buffer);
+    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 8, sizeof(cl_int),
+                             (void *)&wassize);
+    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 9, sizeof(cl_mem),
+                             (void *)&dummy_buffer);
     cl_launchKernel(1, &globalWorkingSetSize, &numThreadsPerBlock_x,
                     _HandShakeKernel, _HandShakeCPU_GPU);
     double t = DLL_getTimer(timer);
@@ -813,17 +896,46 @@ void filterImpl_map_kernel_handshake(int _HandShakeCPU_GPU,
     printf("filterImpl_map_kernel invocatio overhead, %f\n", t);
 #endif
   }
+  printf("[KID20] %d selections total: %lf sec\n", selectionCount, sum);
   if (_HandShakeCPU_GPU) {
-    AddGPUBurden[kid] = sum / Count * scaler;
-    printf("sum is %lf\n, filterImpl_map_kernel invocatio overhead in average "
-           "in GPU, %lf\n",
-           sum, AddGPUBurden[kid]);
+    AddGPUBurden[kid] = sum / selectionCount * scaler;
+    printf("filterImpl_map_kernel avg in GPU: %lf ms\n", AddGPUBurden[kid]);
   } else {
-    AddCPUBurden[kid] = sum / Count * scaler;
-    printf("sum is %lf\n, filterImpl_map_kernel invocatio overhead in average "
-           "in CPU, %lf\n",
-           sum, AddCPUBurden[kid]);
+    AddCPUBurden[kid] = sum / selectionCount * scaler;
+    printf("filterImpl_map_kernel avg in CPU: %lf ms\n", AddCPUBurden[kid]);
   }
+
+  // WAS stop flag 설정 → WAS_kernel 종료 대기 → 카운터 읽기
+  if (wasKernel && dummy_buffer) {
+    cl_int err;
+    cl_uint *dmap = (cl_uint *)clEnqueueMapBuffer(
+        CommandQueue[_HandShakeCPU_GPU], dummy_buffer, CL_TRUE, CL_MAP_WRITE, 0,
+        64, 0, NULL, NULL, &err);
+    if (err == CL_SUCCESS && dmap) {
+      dmap[1] = 1;
+      clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                              dmap, 0, NULL, NULL);
+      clFinish(CommandQueue[_HandShakeCPU_GPU]);
+    }
+    if (PrefetchCommandQueue)
+      clFinish(PrefetchCommandQueue);
+
+    cl_uint *counterPtr = (cl_uint *)clEnqueueMapBuffer(
+        CommandQueue[_HandShakeCPU_GPU], dummy_buffer, CL_TRUE, CL_MAP_READ, 0,
+        sizeof(cl_uint), 0, NULL, NULL, &err);
+    if (err == CL_SUCCESS && counterPtr) {
+      printf("[WAS-KID20] Real prefetch hits: %u\n", *counterPtr);
+      clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                              counterPtr, 0, NULL, NULL);
+      clFinish(CommandQueue[_HandShakeCPU_GPU]);
+    }
+    clReleaseKernel(wasKernel);
+  }
+
+  if (was_buffer)
+    clReleaseMemObject(was_buffer);
+  if (dummy_buffer)
+    clReleaseMemObject(dummy_buffer);
 }
 void filterImpl_write_kernel_handshake(int _HandShakeCPU_GPU,
                                        cl_kernel *_HandShakeKernel) {
@@ -1831,14 +1943,96 @@ void gSearchTree_usingKeys_kernel_handshake(int _HandShakeCPU_GPU,
   unsigned int nKeysPerThread =
       uintCeilingDiv(nSearchKeys, THRD_PER_GRID_search);
 
-  size_t numThreadsPerBlock_x = 256;
-  size_t globalWorkingSetSize = 32 * 64;
+  size_t numThreadsPerBlock_x = THRD_PER_BLCK_search; // 32
+  size_t globalWorkingSetSize = THRD_PER_GRID_search; // 32 * 512 = 16384
+
+  // ── WAS 버퍼 할당 ──
+  int wassize = g_prefetchEnabled ? g_prefetchWASSize / 2 : 0;
+  size_t wasEntrySize = 4 * sizeof(cl_ulong); // 32 bytes
+  cl_mem was_buffer = NULL;
+  cl_mem dummy_buffer = NULL;
+  cl_kernel wasKernel = NULL;
+  void *dummyDevPtr = NULL;
+
+  typedef struct {
+    void *p1;
+    void *p2;
+    cl_long state1;
+    cl_long state2;
+  } HostWASEntry;
+
+  if (wassize > 0) {
+    cl_int err;
+
+    // dummy_buffer 생성 및 제로 초기화 — 매핑 주소를 dummyDevPtr로 보존
+    dummy_buffer = clCreateBuffer(
+        Context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, 64, NULL, &err);
+    if (err == CL_SUCCESS) {
+      void *dmap =
+          clEnqueueMapBuffer(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                             CL_TRUE, CL_MAP_WRITE, 0, 64, 0, NULL, NULL, &err);
+      if (err == CL_SUCCESS && dmap) {
+        dummyDevPtr = dmap;
+        memset(dmap, 0, 64);
+        clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                                dmap, 0, NULL, NULL);
+        clFinish(CommandQueue[_HandShakeCPU_GPU]);
+      }
+    }
+
+    // was_buffer 생성 및 호스트에서 dummy_addr로 직접 초기화
+    was_buffer =
+        clCreateBuffer(Context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR,
+                       wasEntrySize * wassize, NULL, &err);
+    if (err != CL_SUCCESS) {
+      printf("[WAS] Error %d allocating was_buffer.\n", err);
+      wassize = 0;
+    } else {
+      void *mapped = clEnqueueMapBuffer(
+          CommandQueue[_HandShakeCPU_GPU], was_buffer, CL_TRUE, CL_MAP_WRITE, 0,
+          wasEntrySize * wassize, 0, NULL, NULL, &err);
+      if (err == CL_SUCCESS && mapped) {
+        HostWASEntry *entries = (HostWASEntry *)mapped;
+        for (int w = 0; w < wassize; w++) {
+          entries[w].p1 = dummyDevPtr;
+          entries[w].p2 = dummyDevPtr;
+          entries[w].state1 = -1;
+          entries[w].state2 = -1;
+        }
+        clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], was_buffer,
+                                mapped, 0, NULL, NULL);
+        clFinish(CommandQueue[_HandShakeCPU_GPU]);
+      }
+    }
+
+    // WAS_kernel 비동기 launch (초기화+warmup 완료 후)
+    if (wassize > 0 && PrefetchCommandQueue) {
+      cl_int kerr;
+      wasKernel = clCreateKernel(Program, "WAS_kernel", &kerr);
+      if (kerr == CL_SUCCESS) {
+        clSetKernelArg(wasKernel, 0, sizeof(cl_mem), (void *)&was_buffer);
+        clSetKernelArg(wasKernel, 1, sizeof(cl_int), (void *)&wassize);
+        clSetKernelArg(wasKernel, 2, sizeof(cl_mem), (void *)&dummy_buffer);
+        size_t wasGlobal = 1, wasLocal = 1;
+        kerr = clEnqueueNDRangeKernel(PrefetchCommandQueue, wasKernel, 1, NULL,
+                                      &wasGlobal, &wasLocal, 0, NULL, NULL);
+        if (kerr != CL_SUCCESS)
+          printf("[WAS] Error %d launching WAS_kernel.\n", kerr);
+        printf("clflushing\n");
+        clFlush(PrefetchCommandQueue);
+        printf("clflushed\n");
+      }
+    }
+  }
+
   clWaitForEvents(1, &eventList[(index - 1) % 2]);
+  printf("event waited\n");
   int timer = DLL_genTimer(kid);
   for (i = 0; i < Count; i++) {
+
     DLL_getTimer(timer);
     cl_getKernel("gSearchTree_usingKeys_kernel", _HandShakeKernel);
-    // Set the Argument values
+    // Set the Argument values (arg 0-10)
     cl_int ciErr1 = clSetKernelArg((*_HandShakeKernel), 0, sizeof(cl_mem),
                                    (void *)&tree->data);
     ciErr1 |= clSetKernelArg((*_HandShakeKernel), 1, sizeof(cl_int),
@@ -1861,6 +2055,14 @@ void gSearchTree_usingKeys_kernel_handshake(int _HandShakeCPU_GPU,
                              (void *)&tree_size);
     ciErr1 |= clSetKernelArg((*_HandShakeKernel), 10, sizeof(cl_int),
                              (void *)&bottom_start);
+    // WAS 추가 인자 (arg 11-13)
+    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 11, sizeof(cl_mem),
+                             (void *)&was_buffer);
+    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 12, sizeof(cl_int),
+                             (void *)&wassize);
+    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 13, sizeof(cl_mem),
+                             (void *)&dummy_buffer);
+
     cl_launchKernel(1, &globalWorkingSetSize, &numThreadsPerBlock_x,
                     _HandShakeKernel, _HandShakeCPU_GPU);
     double t = DLL_getTimer(timer);
@@ -1869,6 +2071,41 @@ void gSearchTree_usingKeys_kernel_handshake(int _HandShakeCPU_GPU,
     printf("gSearchTree_usingKeys_kernel invocatio overhead, %f\n", t);
 #endif
   }
+
+  // WAS stop flag 설정 → WAS_kernel 종료 대기 → 카운터 읽기
+  if (wasKernel && dummy_buffer) {
+    cl_int err;
+    // dummy_buffer[1] = 1 로 stop flag 설정
+    cl_uint *dmap = (cl_uint *)clEnqueueMapBuffer(
+        CommandQueue[_HandShakeCPU_GPU], dummy_buffer, CL_TRUE, CL_MAP_WRITE, 0,
+        64, 0, NULL, NULL, &err);
+    if (err == CL_SUCCESS && dmap) {
+      dmap[1] = 1;
+      clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                              dmap, 0, NULL, NULL);
+      clFinish(CommandQueue[_HandShakeCPU_GPU]);
+    }
+    // WAS_kernel이 stop flag를 보고 종료할 때까지 대기
+    if (PrefetchCommandQueue)
+      clFinish(PrefetchCommandQueue);
+
+    // 카운터 읽기
+    cl_uint *counterPtr = (cl_uint *)clEnqueueMapBuffer(
+        CommandQueue[_HandShakeCPU_GPU], dummy_buffer, CL_TRUE, CL_MAP_READ, 0,
+        sizeof(cl_uint), 0, NULL, NULL, &err);
+    if (err == CL_SUCCESS && counterPtr) {
+      printf("[WAS-KID45] Real prefetch hits: %u\n", *counterPtr);
+      clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                              counterPtr, 0, NULL, NULL);
+      clFinish(CommandQueue[_HandShakeCPU_GPU]);
+    }
+    clReleaseKernel(wasKernel);
+  }
+  if (was_buffer)
+    clReleaseMemObject(was_buffer);
+  if (dummy_buffer)
+    clReleaseMemObject(dummy_buffer);
+
   printf("try to delete tree\n");
   delete tree;
   printf("start test gSearchTree_usingKeys_kernel\n");

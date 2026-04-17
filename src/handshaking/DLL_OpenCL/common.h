@@ -65,7 +65,15 @@ void cl_writebuffer(cl_mem to, void* from, size_t size,int CPU_GPU);
 void cl_copyBuffer(cl_mem dest, cl_mem src, size_t size,int CPU_GPU);
 
 void cl_init(cl_device_type TYPE);
-void cl_init_common ();
+void cl_init_common();
+void cl_init_cpu_subdevice_queues();
+void cl_init_prefetch();
+void cl_cleanup_prefetch();
+
+#define MAX_CPU_SUBDEVICES 32
+extern cl_command_queue PCommandQueue[MAX_CPU_SUBDEVICES];
+extern cl_device_id cpuSubDevices[MAX_CPU_SUBDEVICES];
+extern int numCpuSubDevices;
 void cl_clean (int iExitCode);
 void cl_prepareProgram(char* cSourceFile, char* dir);
 void cl_getKernel(char* kernelName,cl_kernel *kernel);

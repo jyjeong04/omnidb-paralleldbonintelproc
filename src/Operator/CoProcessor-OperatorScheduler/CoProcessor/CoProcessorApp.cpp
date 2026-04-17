@@ -3,8 +3,6 @@
 #include "HandShaking.h"
 #include "SingularThreadOp.h"
 #include <iostream>
-#include <pthread.h>
-
 using namespace std;
 double evalautedQuery = 0;
 double Query_UpCPUBurden = 0;
