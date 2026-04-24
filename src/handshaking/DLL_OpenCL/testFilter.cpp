@@ -29,19 +29,10 @@ void filterImpl_map_int(cl_mem d_Rin, int beginPos, int rLen, cl_mem d_mark,
   cl_int ciErr1 = clSetKernelArg((*Kernel), 0, sizeof(cl_mem), (void *)&d_Rin);
   ciErr1 |= clSetKernelArg((*Kernel), 1, sizeof(cl_int), (void *)&beginPos);
   ciErr1 |= clSetKernelArg((*Kernel), 2, sizeof(cl_int), (void *)&rLen);
-  ciErr1 |= clSetKernelArg((*Kernel), 3, sizeof(cl_mem), (void *)&d_mark);
+  ciErr1 = clSetKernelArg((*Kernel), 3, sizeof(cl_mem), (void *)&d_mark);
   ciErr1 |= clSetKernelArg((*Kernel), 4, sizeof(cl_int), (void *)&smallKey);
   ciErr1 |= clSetKernelArg((*Kernel), 5, sizeof(cl_int), (void *)&largeKey);
   ciErr1 |= clSetKernelArg((*Kernel), 6, sizeof(cl_mem), (void *)&d_temp);
-
-  // // WAS args (disabled in this path)
-  // cl_mem was_null = NULL;
-  // int wassize_zero = 0;
-  // cl_mem dummy_null = NULL;
-  // ciErr1 |= clSetKernelArg((*Kernel), 7, sizeof(cl_mem), (void *)&was_null);
-  // ciErr1 |= clSetKernelArg((*Kernel), 8, sizeof(cl_int), (void *)&wassize_zero);
-  // ciErr1 |= clSetKernelArg((*Kernel), 9, sizeof(cl_mem), (void *)&dummy_null);
-
   if (ciErr1 != CL_SUCCESS) {
     printf("Error in clSetKernelArg, Line %u in file %s !!!\n\n", __LINE__,
            __FILE__);
@@ -64,7 +55,7 @@ void filterImpl_outSize_int(cl_mem d_outSize, cl_mem d_mark,
       clSetKernelArg((*Kernel), 0, sizeof(cl_mem), (void *)&d_outSize);
   ciErr1 = clSetKernelArg((*Kernel), 1, sizeof(cl_mem), (void *)&d_mark);
   ciErr1 = clSetKernelArg((*Kernel), 2, sizeof(cl_mem), (void *)&d_markOutput);
-  ciErr1 = clSetKernelArg((*Kernel), 3, sizeof(cl_int), (void *)&rLen);
+  ciErr1 = clSetKernelArg((*Kernel), 3, sizeof(cl_mem), (void *)&rLen);
   if (ciErr1 != CL_SUCCESS) {
     printf("Error in clSetKernelArg, Line %u in file %s !!!\n\n", __LINE__,
            __FILE__);

@@ -22,8 +22,7 @@ typedef int IKeyType;
 #define BLCK_PER_MP_create 64 // blocks per multiprocessor during tree creation
 #define BLCK_PER_MP_search 64 // blocks per multiprocessor during tree searching
 #define WAPRS_PER_BLCK_join 8 // blocks per multiprocessor during tree creation
-#define BLCK_PER_MP_join                                                       \
-  64 // 256	// blocks per multiprocessor during tree searching
+#define BLCK_PER_MP_join 64   // blocks per multiprocessor during tree searching
 // #endregion
 
 // #region definition of card specific parameters
@@ -860,8 +859,8 @@ filterImpl_map_kernel(__global Record *d_Rin, int beginPos, int rLen,
 
     // flush
     for (int i = 0; i < was_per_wi; i++) {
-      WASEntry old = post(was_buffer, dummy_addr, dummy_addr, -1, -1,
-                          was_base + was_step);
+      WASEntry old =
+          post(was_buffer, dummy_addr, dummy_addr, -1, -1, was_base + was_step);
       was_step++;
       if (was_step >= was_per_wi)
         was_step = 0;
@@ -1539,9 +1538,7 @@ __kernel // kid=45
     void gSearchTree_usingKeys_kernel(
         __global IDataNode *data, int nDataNodes, __global IDirectoryNode *dir,
         int nDirNodes, int lvlDir, __global int *arr, __global int *locations,
-        int nSearchKeys, int nKeysPerThread, int tree_size, int bottom_start,
-        __global WASEntry *was_buffer, int wassize,
-        __global uint *dummy_buffer) {
+        int nSearchKeys, int nKeysPerThread, int tree_size, int bottom_start) {
   int bid = get_group_id(0);
   int tid = get_local_id(0);
   // Bringing the root node (visited by every tuple) to the faster shared memory
@@ -1552,83 +1549,26 @@ __kernel // kid=45
 
   int OverallThreadIdx = bid * THRD_PER_BLCK_search + tid;
 
-  __global uint *dummy_addr = dummy_buffer;
-  const int WAS_STRIDE = 8192;
-  int was_slot = OverallThreadIdx % WAS_STRIDE;
-  if (wassize <= 0) {
-    for (int keyIdx = OverallThreadIdx; keyIdx < nSearchKeys;
-         keyIdx += THRD_PER_GRID_search) {
-      IKeyType val = arr[keyIdx];
-      int loc = firstMatchingKeyInDirNodeSM(RootNodeKeys, val) + 1;
-      for (int i = 1; i < lvlDir && loc < nDirNodes; i++) {
-        int kid = firstMatchingKeyInDirNode1(dir[loc].keys, val);
-        loc = loc * TREE_FANOUT + kid + 1;
-      }
-
-      if (loc >= tree_size)
-        loc = nDataNodes - 1;
-      else
-        loc = getDataArrayIdx(nDirNodes, tree_size, bottom_start, loc);
-
-      int offset = firstMatchingKeyInDataNode_saven(data[loc].records, val);
-      locations[keyIdx] = loc * TREE_NODE_SIZE + offset;
-    }
-  } else {
-    int was_step = 0;
-    WASEntry old = {dummy_addr, dummy_addr, -1, -1};
-    for (int keyIdx = OverallThreadIdx; keyIdx < nSearchKeys;
-         keyIdx += THRD_PER_GRID_search) {
-      IKeyType val = arr[keyIdx];
-      int loc = firstMatchingKeyInDirNodeSM(RootNodeKeys, val) + 1;
-      for (int i = 1; i < lvlDir && loc < nDirNodes; i++) {
-        int kid2 = firstMatchingKeyInDirNode1(dir[loc].keys, val);
-        loc = loc * TREE_FANOUT + kid2 + 1;
-      }
-      if (loc >= tree_size)
-        loc = nDataNodes - 1;
-      else
-        loc = getDataArrayIdx(nDirNodes, tree_size, bottom_start, loc);
-
-      old = post(was_buffer, (__global uint *)&data[loc].records[0],
-                 (__global uint *)&data[loc].records[TREE_NODE_SIZE / 2],
-                 keyIdx, loc, was_slot);
-      was_slot += WAS_STRIDE;
-      if (was_slot >= wassize)
-        was_slot = OverallThreadIdx % WAS_STRIDE;
-
-      if (old.state1 >= 0 && old.state1 < nSearchKeys && old.state2 >= 0 &&
-          old.state2 < nDataNodes) {
-        int old_keyIdx = old.state1;
-        int old_loc = old.state2;
-        IKeyType old_val = arr[old_keyIdx];
-        int offset =
-            firstMatchingKeyInDataNode_saven(data[old_loc].records, old_val);
-        locations[old_keyIdx] = old_loc * TREE_NODE_SIZE + offset;
-      }
+  for (int keyIdx = OverallThreadIdx; keyIdx < nSearchKeys;
+       keyIdx += THRD_PER_GRID_search) {
+    IKeyType val = arr[keyIdx];
+    int loc = firstMatchingKeyInDirNodeSM(RootNodeKeys, val) + 1;
+    for (int i = 1; i < lvlDir && loc < nDirNodes; i++) {
+      int kid = firstMatchingKeyInDirNode1(dir[loc].keys, val);
+      loc = loc * TREE_FANOUT + kid + 1;
     }
 
-    // flush
-    int flush_count = wassize / WAS_STRIDE;
-    if (flush_count < 1)
-      flush_count = 1;
-    for (int i = 0; i < flush_count; i++) {
-      old = post(was_buffer, dummy_addr, dummy_addr, -1, -1, was_slot);
-      was_slot += WAS_STRIDE;
-      if (was_slot >= wassize)
-        was_slot = OverallThreadIdx % wassize;
+    if (loc >= tree_size)
+      loc = nDataNodes - 1;
+    else
+      loc = getDataArrayIdx(nDirNodes, tree_size, bottom_start, loc);
 
-      if (old.state1 >= 0 && old.state1 < nSearchKeys && old.state2 >= 0 &&
-          old.state2 < nDataNodes) {
-        int old_keyIdx = old.state1;
-        int old_loc = old.state2;
-        IKeyType old_val = arr[old_keyIdx];
-        int offset =
-            firstMatchingKeyInDataNode_saven(data[old_loc].records, old_val);
-        locations[old_keyIdx] = old_loc * TREE_NODE_SIZE + offset;
-      }
-    }
+    int offset = firstMatchingKeyInDataNode_saven(data[loc].records, val);
+    locations[keyIdx] = loc * TREE_NODE_SIZE + offset;
   }
 }
+
+// sort merge join.
 
 // sort merge join.
 
