@@ -25,6 +25,8 @@ extern cl_device_id
     MainCPUSubDevice; // Remaining CUs sub-device for main CPU work
 extern cl_command_queue
     PrefetchCommandQueue;     // Command queue for prefetch operations
+extern cl_command_queue
+    FullCPUCommandQueue;      // Full 8-CU queue on parent Device[0] (noWAS path)
 extern int g_prefetchEnabled; // 1 = prefetching active, 0 = disabled
 extern int g_prefetchWASSize; // Work-ahead set size (in elements)
 extern double LoGPUBurden;
@@ -531,6 +533,20 @@ void cl_init_prefetch() {
     CommandQueue[0] = clCreateCommandQueue(Context, Device[0], 0, &err);
   }
 
+  // 5b. Create a full-device (8-CU) command queue on parent Device[0] for noWAS
+  //     baseline runs. Sub-devices coexist with the parent; we route noWAS
+  //     kernel launches through this queue to use all 8 CUs (no fission cost).
+  FullCPUCommandQueue = clCreateCommandQueue(Context, Device[0], 0, &err);
+  if (err != CL_SUCCESS) {
+    printf("[Prefetch] Warning: Error %d creating FullCPUCommandQueue. "
+           "noWAS path will use 7-CU sub-device.\n",
+           err);
+    FullCPUCommandQueue = NULL;
+  } else {
+    printf("[Prefetch] Created FullCPUCommandQueue on parent Device[0] (%u CUs)\n",
+           maxCUs);
+  }
+
   // 6. Set default WAS size if not already configured
   if (g_prefetchWASSize <= 0) {
     cl_ulong cacheSize = 0;
@@ -538,22 +554,50 @@ void cl_init_prefetch() {
                     sizeof(cl_ulong), &cacheSize, NULL);
 
     if (cacheSize > 0) {
-      // 논문 §4.2: WAS 전체 캐시 점유량이 L3의 1/4 이내여야 함
-      // 엔트리당 캐시 점유: 버퍼 자체(32B) + 프리페치 데이터(2포인터 × 64B 캐시라인)
-      // N × (entrySize + pointersPerEntry × cacheLineSize) ≤ cache / 4
-      size_t entrySize = 32;
-      int pointersPerEntry = 2;
-      size_t cacheLineSize = 64;
-      size_t costPerEntry = entrySize + pointersPerEntry * cacheLineSize;
+      // === Zhou et al. VLDB 2005 §4.2 ===
+      //
+      //   "the expected amount of preloaded data for the entire work-ahead
+      //    set should be smaller than the L2 cache size. Since the main
+      //    thread may have older cache-resident data that is still being
+      //    used, and in order to avoid conflict misses, the threshold
+      //    should be lower, such as one quarter of the cache size."
+      //
+      // Paper assumes Pentium 4 SMT (helper+main share L2). Our setup uses
+      // device fission (helper on 1 core, main on 7 cores), so the *shared*
+      // cache is L3 — apply the L3/4 rule there.
+      //
+      // Per entry cache occupancy:
+      //   - WAS struct itself              : 32 B (lives in WAS buffer)
+      //   - 2 pointers × 64 B cache line   : 128 B (preloaded data)
+      //   ────────────────────────────────────────────────
+      //   total                            : 160 B
+      //
+      // Constraint:  N × 160 B ≤ cache / 4
+      const size_t entrySize = 32;
+      const int pointersPerEntry = 2; // p1 + p2 in WASEntry
+      const size_t cacheLineSize = 64;
+      const size_t preloadPerEntry = pointersPerEntry * cacheLineSize; // 128
+      const size_t costPerEntry = entrySize + preloadPerEntry;         // 160
 
       int raw = (int)(cacheSize / (4 * costPerEntry));
-      // 2의 거듭제곱으로 내림 (모듈러 연산 대신 비트마스크 사용 가능)
+      // Power of 2 round-down (allows bitmask wrap in WAS_kernel idx step)
       int pot = 1;
       while (pot * 2 <= raw)
         pot *= 2;
       g_prefetchWASSize = pot;
-      printf("[Prefetch] L3 cache = %lu bytes, cost/entry = %zu bytes\n",
-             (unsigned long)cacheSize, costPerEntry);
+
+      // Paper-compliance accounting
+      double l3_total_pct =
+          100.0 * (double)pot * costPerEntry / (double)cacheSize;
+      double l3_preload_pct =
+          100.0 * (double)pot * preloadPerEntry / (double)cacheSize;
+      printf("[Prefetch] L3 = %.1f MB, cost/entry = %zu B "
+             "(struct %zu + preload %zu)\n",
+             cacheSize / (1024.0 * 1024.0), costPerEntry, entrySize,
+             preloadPerEntry);
+      printf("[Prefetch] WAS=%d → preload=%.2f%% L3, total=%.2f%% L3 "
+             "(paper §4.2 L3/4 = 25%% threshold)\n",
+             pot, l3_preload_pct, l3_total_pct);
     }
   }
 

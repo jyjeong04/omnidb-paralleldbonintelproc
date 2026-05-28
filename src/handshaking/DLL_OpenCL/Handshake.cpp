@@ -13,6 +13,7 @@ extern int g_prefetchWASSize;
 extern cl_context Context;                    // OpenCL context
 extern cl_command_queue CommandQueue[2];      // OpenCL command queues
 extern cl_command_queue PrefetchCommandQueue; // WAS prefetch queue
+extern cl_command_queue FullCPUCommandQueue;  // Full 8-CU queue (noWAS path)
 extern cl_program Program;                    // OpenCL program
 extern cl_device_id Device[2];                // OpenCL device (for L3 query)
 extern double
@@ -778,164 +779,279 @@ void ScanLargeArrays_kernel_handshake(int _HandShakeCPU_GPU,
 
 void filterImpl_map_kernel_handshake(int _HandShakeCPU_GPU,
                                      cl_kernel *_HandShakeKernel) {
-  double i;
-  double sum = 0;
+  if (_HandShakeCPU_GPU == 1) {
+    exit(0);
+  }
   double scaler = 1000;
   int kid = 20;
-  printf("Kid%d", kid);
-  int numRun = 8;
-  int runSize = rLen / numRun;
-  from = 0;
-  to = runSize;
-  int smallKey = rand() % TEST_MAX;
-  int largeKey = smallKey + 20000000;
+  printf("Kid%d sweep mode\n", kid);
+  printf("forward + no spin loop\n");
   int beginPos = 0;
   int timer = DLL_genTimer(kid);
+  size_t wasEntrySize = 4 * sizeof(cl_ulong); // 32 B
 
-  // WAS 버퍼 할당
-  int wassize = g_prefetchEnabled ? g_prefetchWASSize * 4 : 0;
-  printf("was size: %d\n", wassize);
-  size_t wasEntrySize = 4 * sizeof(cl_ulong); // 32 bytes
-  cl_mem was_buffer = NULL;
-  cl_mem dummy_buffer = NULL;
-  if (wassize > 0) {
-    cl_int err;
-    was_buffer = clCreateBuffer(Context, CL_MEM_READ_WRITE,
-                                wassize * wasEntrySize, NULL, &err);
-    dummy_buffer = clCreateBuffer(
-        Context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, 64, NULL, &err);
-    if (err == CL_SUCCESS) {
-      void *dmap =
-          clEnqueueMapBuffer(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
-                             CL_TRUE, CL_MAP_WRITE, 0, 64, 0, NULL, NULL, &err);
+  // Paper §4.2 cache pressure model — per entry cost in shared L3:
+  //   WAS struct (32B) + preload (M=2 × 64B cache line) = 160B
+  // Paper threshold: total ≤ cache/4 (= 25% L3) for safety.
+  cl_ulong l3CacheSize = 0;
+  clGetDeviceInfo(Device[0], CL_DEVICE_GLOBAL_MEM_CACHE_SIZE, sizeof(cl_ulong),
+                  &l3CacheSize, NULL);
+  const size_t kEntryStruct = 32;
+  const size_t kPreloadPerEntry = 2 * 64;                       // 128 B
+  const size_t kCostPerEntry = kEntryStruct + kPreloadPerEntry; // 160 B
+
+  // Sweep axes (Method A focus: was_per_wi partitioning, helper sequential):
+  //   - delta:    1792 (= 7×256 = 1 WG/main core, Method A)
+  //               7168, 14336, ... (multiple WGs/core for comparison)
+  //   - wassize:  K × delta where K = wassize/delta = was_per_wi
+  //               (lookahead depth, paper §4.2 §4.4)
+  struct SweepCfg {
+    const char *label;
+    int delta;
+    int wassize;
+  };
+  struct SweepCfg cfgs[] = {
+      //>>>CFGS_BEGIN
+      {"M1 d=1792 noWAS7c", 1792, -1},
+      {"M1 d=1792 noWAS8c", 1792, 0},
+      {"M1 d=1792 w28", 1792, 28},
+      {"M1 d=1792 w56", 1792, 56},
+      {"M1 d=1792 w112", 1792, 112},
+      {"M1 d=1792 w224", 1792, 224},
+      {"M1 d=1792 w448", 1792, 448},
+      {"M1 d=1792 w896", 1792, 896},
+      {"M1 d=1792 w1792", 1792, 1792},
+      {"M1 d=1792 w3584", 1792, 3584},
+      {"M1 d=1792 w7168", 1792, 7168},
+      {"M1 d=1792 w14336", 1792, 14336},
+      {"M1 d=1792 w28672", 1792, 28672},
+      {"M1 d=1792 w57344", 1792, 57344},
+      //<<<CFGS_END
+  };
+  size_t n_cfgs = sizeof(cfgs) / sizeof(cfgs[0]);
+
+  struct SweepResult {
+    const char *label;
+    int delta;
+    int wassize;
+    double total_sec;
+    double avg_ms;
+    cl_uint hits;
+  } results[64];
+
+  for (size_t c = 0; c < n_cfgs; c++) {
+    // isolate one cfg for perf cache-miss measurement (FILTER_ONLY_W=<wassize>)
+    if (getenv("FILTER_ONLY_W") &&
+        cfgs[c].wassize != atoi(getenv("FILTER_ONLY_W")))
+      continue;
+    int wassize = cfgs[c].wassize;
+    size_t globalWorkingSetSize = (size_t)cfgs[c].delta;
+    size_t numThreadsPerBlock_x = 256;
+    double sum = 0;
+    cl_uint hits = 0;
+
+    cl_mem was_buffer = NULL;
+    cl_mem dummy_buffer = NULL;
+    cl_mem last_tag_buffer = NULL;
+
+    if (wassize > 0) {
+      cl_int err;
+      was_buffer = clCreateBuffer(Context, CL_MEM_READ_WRITE,
+                                  wassize * wasEntrySize, NULL, &err);
+      dummy_buffer = clCreateBuffer(
+          Context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, 64, NULL, &err);
+      if (err == CL_SUCCESS) {
+        void *dmap = clEnqueueMapBuffer(CommandQueue[_HandShakeCPU_GPU],
+                                        dummy_buffer, CL_TRUE, CL_MAP_WRITE, 0,
+                                        64, 0, NULL, NULL, &err);
+        if (err == CL_SUCCESS && dmap) {
+          memset(dmap, 0, 64);
+          clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                                  dmap, 0, NULL, NULL);
+          clFinish(CommandQueue[_HandShakeCPU_GPU]);
+        }
+      }
+      cl_ulong *wmap = (cl_ulong *)clEnqueueMapBuffer(
+          CommandQueue[_HandShakeCPU_GPU], was_buffer, CL_TRUE, CL_MAP_WRITE, 0,
+          wassize * wasEntrySize, 0, NULL, NULL, &err);
+      if (err == CL_SUCCESS && wmap) {
+        void *dmap2 =
+            clEnqueueMapBuffer(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                               CL_TRUE, CL_MAP_READ, 0, 8, 0, NULL, NULL, &err);
+        cl_ulong dummyVal = (cl_ulong)(uintptr_t)dmap2;
+        if (dmap2)
+          clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
+                                  dmap2, 0, NULL, NULL);
+        for (int j = 0; j < wassize; j++) {
+          wmap[j * 4 + 0] = dummyVal;
+          wmap[j * 4 + 1] = dummyVal;
+          wmap[j * 4 + 2] = (cl_ulong)-1;
+          wmap[j * 4 + 3] = (cl_ulong)-1;
+        }
+        clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], was_buffer,
+                                wmap, 0, NULL, NULL);
+        clFinish(CommandQueue[_HandShakeCPU_GPU]);
+      }
+      // last_tag: per-slot last seen pointer (as ulong). Init 0 (NULL — will
+      // never collide with valid d_Rin pointers, so first real post triggers
+      // preload).
+      last_tag_buffer = clCreateBuffer(Context, CL_MEM_READ_WRITE,
+                                       wassize * sizeof(cl_ulong), NULL, &err);
+      if (err == CL_SUCCESS) {
+        cl_ulong *lmap = (cl_ulong *)clEnqueueMapBuffer(
+            CommandQueue[_HandShakeCPU_GPU], last_tag_buffer, CL_TRUE,
+            CL_MAP_WRITE, 0, wassize * sizeof(cl_ulong), 0, NULL, NULL, &err);
+        if (err == CL_SUCCESS && lmap) {
+          memset(lmap, 0, wassize * sizeof(cl_ulong));
+          clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU],
+                                  last_tag_buffer, lmap, 0, NULL, NULL);
+          clFinish(CommandQueue[_HandShakeCPU_GPU]);
+        }
+      }
+    }
+
+    cl_kernel wasKernel = NULL;
+    if (wassize > 0 && was_buffer && dummy_buffer && last_tag_buffer &&
+        PrefetchCommandQueue) {
+      cl_int kerr;
+      wasKernel = clCreateKernel(Program, "WAS_kernel", &kerr);
+      if (kerr == CL_SUCCESS) {
+        clSetKernelArg(wasKernel, 0, sizeof(cl_mem), (void *)&was_buffer);
+        clSetKernelArg(wasKernel, 1, sizeof(cl_int), (void *)&wassize);
+        clSetKernelArg(wasKernel, 2, sizeof(cl_mem), (void *)&dummy_buffer);
+        clSetKernelArg(wasKernel, 3, sizeof(cl_mem), (void *)&last_tag_buffer);
+        cl_int wmode = getenv("FILTER_MODE") ? atoi(getenv("FILTER_MODE")) : 6;
+        clSetKernelArg(wasKernel, 4, sizeof(cl_int), (void *)&wmode);
+        size_t wasGlobal = 1, wasLocal = 1;
+        kerr = clEnqueueNDRangeKernel(PrefetchCommandQueue, wasKernel, 1, NULL,
+                                      &wasGlobal, &wasLocal, 0, NULL, NULL);
+        clFlush(PrefetchCommandQueue);
+      }
+    }
+
+    // Queue selection by wassize:
+    //   wassize == 0  -> noWAS on full 8 CUs (FullCPUCommandQueue)
+    //   wassize <  0  -> noWAS on 7-CU MainCPUSubDevice (no swap) — control to
+    //                    isolate the helper effect at equal main-core count
+    //   wassize >  0  -> WAS: 7-CU main + helper on the prefetch CU
+    cl_command_queue savedQ = CommandQueue[_HandShakeCPU_GPU];
+    if (wassize == 0 && FullCPUCommandQueue) {
+      CommandQueue[_HandShakeCPU_GPU] = FullCPUCommandQueue;
+    }
+
+    int selectionCount = getenv("FILTER_REPS") ? atoi(getenv("FILTER_REPS")) : 50;
+    for (int it = 0; it < selectionCount; it++) {
+      DLL_getTimer(timer);
+      cl_getKernel((char *)"filterImpl_map_kernel", _HandShakeKernel);
+
+      int smallKey = rand() % TEST_MAX;
+      int largeKey = smallKey + 20000000;
+
+      cl_int ciErr1 =
+          clSetKernelArg((*_HandShakeKernel), 0, sizeof(cl_mem), (void *)&D1);
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 1, sizeof(cl_int),
+                               (void *)&beginPos);
+      ciErr1 |=
+          clSetKernelArg((*_HandShakeKernel), 2, sizeof(cl_int), (void *)&rLen);
+      ciErr1 |=
+          clSetKernelArg((*_HandShakeKernel), 3, sizeof(cl_mem), (void *)&D5);
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 4, sizeof(cl_int),
+                               (void *)&smallKey);
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 5, sizeof(cl_int),
+                               (void *)&largeKey);
+      ciErr1 |=
+          clSetKernelArg((*_HandShakeKernel), 6, sizeof(cl_mem), (void *)&D3);
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 7, sizeof(cl_mem),
+                               (void *)&was_buffer);
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 8, sizeof(cl_int),
+                               (void *)&wassize);
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 9, sizeof(cl_mem),
+                               (void *)&dummy_buffer);
+      cl_launchKernel(1, &globalWorkingSetSize, &numThreadsPerBlock_x,
+                      _HandShakeKernel, _HandShakeCPU_GPU);
+      double t = DLL_getTimer(timer);
+      sum += t;
+    }
+
+    // Restore the original queue before any WAS cleanup runs on it.
+    CommandQueue[_HandShakeCPU_GPU] = savedQ;
+
+    if (wasKernel && dummy_buffer) {
+      cl_int err;
+      cl_uint *dmap = (cl_uint *)clEnqueueMapBuffer(
+          CommandQueue[_HandShakeCPU_GPU], dummy_buffer, CL_TRUE, CL_MAP_WRITE,
+          0, 64, 0, NULL, NULL, &err);
       if (err == CL_SUCCESS && dmap) {
-        memset(dmap, 0, 64);
+        dmap[1] = 1;
         clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
                                 dmap, 0, NULL, NULL);
         clFinish(CommandQueue[_HandShakeCPU_GPU]);
       }
-    }
-    // was_buffer를 dummy_addr로 초기화
-    cl_ulong *wmap = (cl_ulong *)clEnqueueMapBuffer(
-        CommandQueue[_HandShakeCPU_GPU], was_buffer, CL_TRUE, CL_MAP_WRITE, 0,
-        wassize * wasEntrySize, 0, NULL, NULL, &err);
-    if (err == CL_SUCCESS && wmap) {
-      void *dmap2 =
-          clEnqueueMapBuffer(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
-                             CL_TRUE, CL_MAP_READ, 0, 8, 0, NULL, NULL, &err);
-      cl_ulong dummyVal = (cl_ulong)(uintptr_t)dmap2;
-      if (dmap2)
+      if (PrefetchCommandQueue)
+        clFinish(PrefetchCommandQueue);
+
+      cl_uint *counterPtr = (cl_uint *)clEnqueueMapBuffer(
+          CommandQueue[_HandShakeCPU_GPU], dummy_buffer, CL_TRUE, CL_MAP_READ,
+          0, sizeof(cl_uint), 0, NULL, NULL, &err);
+      if (err == CL_SUCCESS && counterPtr) {
+        hits = *counterPtr;
         clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
-                                dmap2, 0, NULL, NULL);
-      for (int j = 0; j < wassize; j++) {
-        wmap[j * 4 + 0] = dummyVal;     // p1
-        wmap[j * 4 + 1] = dummyVal;     // p2
-        wmap[j * 4 + 2] = (cl_ulong)-1; // state1
-        wmap[j * 4 + 3] = (cl_ulong)-1; // state2
+                                counterPtr, 0, NULL, NULL);
+        clFinish(CommandQueue[_HandShakeCPU_GPU]);
       }
-      clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], was_buffer, wmap,
-                              0, NULL, NULL);
-      clFinish(CommandQueue[_HandShakeCPU_GPU]);
+      clReleaseKernel(wasKernel);
     }
+
+    if (was_buffer)
+      clReleaseMemObject(was_buffer);
+    if (dummy_buffer)
+      clReleaseMemObject(dummy_buffer);
+    if (last_tag_buffer)
+      clReleaseMemObject(last_tag_buffer);
+
+    results[c].label = cfgs[c].label;
+    results[c].delta = cfgs[c].delta;
+    results[c].wassize = wassize;
+    results[c].total_sec = sum;
+    results[c].avg_ms = sum / selectionCount * scaler;
+    results[c].hits = hits;
+
+    // Paper §4.2 cache footprint: total = wassize × (struct + preload)
+    double l3_pct = (l3CacheSize > 0) ? 100.0 * (double)wassize *
+                                            kCostPerEntry / (double)l3CacheSize
+                                      : 0.0;
+    const char *paper_flag = (l3_pct > 25.0) ? " §4.2>L3/4" : "";
+
+    printf("[KID20-SWEEP %2zu/%2zu] %-25s d=%6d w=%6d "
+           "L3=%5.1f%% avg=%7.2fms hits=%u%s\n",
+           c + 1, n_cfgs, cfgs[c].label, cfgs[c].delta, wassize, l3_pct,
+           results[c].avg_ms, hits, paper_flag);
+    fflush(stdout);
   }
 
-  // WAS_kernel 시작 (helper thread on prefetch CU)
-  cl_kernel wasKernel = NULL;
-  if (wassize > 0 && was_buffer && dummy_buffer && PrefetchCommandQueue) {
-    cl_int kerr;
-    wasKernel = clCreateKernel(Program, "WAS_kernel", &kerr);
-    if (kerr == CL_SUCCESS) {
-      clSetKernelArg(wasKernel, 0, sizeof(cl_mem), (void *)&was_buffer);
-      clSetKernelArg(wasKernel, 1, sizeof(cl_int), (void *)&wassize);
-      clSetKernelArg(wasKernel, 2, sizeof(cl_mem), (void *)&dummy_buffer);
-      size_t wasGlobal = 1, wasLocal = 1;
-      kerr = clEnqueueNDRangeKernel(PrefetchCommandQueue, wasKernel, 1, NULL,
-                                    &wasGlobal, &wasLocal, 0, NULL, NULL);
-      clFlush(PrefetchCommandQueue);
-    }
+  printf("\n[KID20-SWEEP RESULTS]  (paper §4.2: L3≤25%% safe)\n");
+  printf("%-25s %6s %7s %7s %10s %12s\n", "label", "delta", "wassize", "L3%",
+         "avg(ms)", "hits");
+  printf("------------------------- ------ ------- --- ------- ---------- "
+         "------------\n");
+  size_t best = 0;
+  for (size_t c = 0; c < n_cfgs; c++) {
+    if (results[c].avg_ms < results[best].avg_ms)
+      best = c;
+    double l3_pct = (l3CacheSize > 0) ? 100.0 * (double)results[c].wassize *
+                                            kCostPerEntry / (double)l3CacheSize
+                                      : 0.0;
+    const char *flag = (l3_pct > 25.0) ? " ⚠" : "";
+    printf("%-25s %6d %7d %6.1f%% %10.3f %12u%s\n", results[c].label,
+           results[c].delta, results[c].wassize, l3_pct, results[c].avg_ms,
+           results[c].hits, flag);
   }
+  printf("[KID20-SWEEP BEST] %s avg=%.2fms (vs BASE noWAS-d=131k=%.2fms)\n",
+         results[best].label, results[best].avg_ms, results[0].avg_ms);
 
-  int selectionCount = 15;
-  for (i = 0; i < selectionCount; i++) {
-
-    DLL_getTimer(timer);
-    size_t numThreadsPerBlock_x = 256;
-    size_t globalWorkingSetSize = 256 * 512;
-    cl_getKernel("filterImpl_map_kernel", _HandShakeKernel);
-
-    smallKey = rand() % TEST_MAX;
-    largeKey = smallKey + 20000000;
-
-    // Set the Argument values
-    cl_int ciErr1 =
-        clSetKernelArg((*_HandShakeKernel), 0, sizeof(cl_mem), (void *)&D1);
-    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 1, sizeof(cl_int),
-                             (void *)&beginPos);
-    ciErr1 |=
-        clSetKernelArg((*_HandShakeKernel), 2, sizeof(cl_int), (void *)&rLen);
-    ciErr1 =
-        clSetKernelArg((*_HandShakeKernel), 3, sizeof(cl_mem), (void *)&D5);
-    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 4, sizeof(cl_int),
-                             (void *)&smallKey);
-    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 5, sizeof(cl_int),
-                             (void *)&largeKey);
-    ciErr1 |=
-        clSetKernelArg((*_HandShakeKernel), 6, sizeof(cl_mem), (void *)&D3);
-    // WAS 추가 인자 (arg 7-9)
-    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 7, sizeof(cl_mem),
-                             (void *)&was_buffer);
-    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 8, sizeof(cl_int),
-                             (void *)&wassize);
-    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 9, sizeof(cl_mem),
-                             (void *)&dummy_buffer);
-    cl_launchKernel(1, &globalWorkingSetSize, &numThreadsPerBlock_x,
-                    _HandShakeKernel, _HandShakeCPU_GPU);
-    double t = DLL_getTimer(timer);
-    sum += t;
-#ifdef HandshakeDebug
-    printf("filterImpl_map_kernel invocatio overhead, %f\n", t);
-#endif
-  }
-  printf("[KID20] %d selections total: %lf sec\n", selectionCount, sum);
-  if (_HandShakeCPU_GPU) {
-    AddGPUBurden[kid] = sum / selectionCount * scaler;
-    printf("filterImpl_map_kernel avg in GPU: %lf ms\n", AddGPUBurden[kid]);
-  } else {
-    AddCPUBurden[kid] = sum / selectionCount * scaler;
-    printf("filterImpl_map_kernel avg in CPU: %lf ms\n", AddCPUBurden[kid]);
-  }
-
-  // WAS stop flag 설정 → WAS_kernel 종료 대기 → 카운터 읽기
-  if (wasKernel && dummy_buffer) {
-    cl_int err;
-    cl_uint *dmap = (cl_uint *)clEnqueueMapBuffer(
-        CommandQueue[_HandShakeCPU_GPU], dummy_buffer, CL_TRUE, CL_MAP_WRITE, 0,
-        64, 0, NULL, NULL, &err);
-    if (err == CL_SUCCESS && dmap) {
-      dmap[1] = 1;
-      clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
-                              dmap, 0, NULL, NULL);
-      clFinish(CommandQueue[_HandShakeCPU_GPU]);
-    }
-    if (PrefetchCommandQueue)
-      clFinish(PrefetchCommandQueue);
-
-    cl_uint *counterPtr = (cl_uint *)clEnqueueMapBuffer(
-        CommandQueue[_HandShakeCPU_GPU], dummy_buffer, CL_TRUE, CL_MAP_READ, 0,
-        sizeof(cl_uint), 0, NULL, NULL, &err);
-    if (err == CL_SUCCESS && counterPtr) {
-      printf("[WAS-KID20] Real prefetch hits: %u\n", *counterPtr);
-      clEnqueueUnmapMemObject(CommandQueue[_HandShakeCPU_GPU], dummy_buffer,
-                              counterPtr, 0, NULL, NULL);
-      clFinish(CommandQueue[_HandShakeCPU_GPU]);
-    }
-    clReleaseKernel(wasKernel);
-  }
-
-  if (was_buffer)
-    clReleaseMemObject(was_buffer);
-  if (dummy_buffer)
-    clReleaseMemObject(dummy_buffer);
+  AddCPUBurden[kid] = results[best].avg_ms;
+  printf("filterImpl_map_kernel avg in CPU: %lf ms (best from sweep)\n",
+         AddCPUBurden[kid]);
 }
 void filterImpl_write_kernel_handshake(int _HandShakeCPU_GPU,
                                        cl_kernel *_HandShakeKernel) {
@@ -2247,94 +2363,371 @@ void build_kernel_handshake(int _HandShakeCPU_GPU,
 }
 void probe_kernel_handshake(int _HandShakeCPU_GPU,
                             cl_kernel *_HandShakeKernel) {
-  double i;
-  double sum = 0;
+  // CPU-only: the WG-shared WAS post races under GPU SIMD; on PoCL CPU the
+  // work-items of a work-group run sequentially, so it is race-free.
+  if (_HandShakeCPU_GPU == 1)
+    return;
   double scaler = 1000;
-  int Count = 1;
   int kid = 50;
-  printf("Kid%d", kid);
-  cl_int result = 0;
+  printf("Kid%d probe WAS sweep mode (CPU)\n", kid);
   cl_uint rHashTableBucketNum = 2 * 1024 * 1024;
+  size_t wasEntrySize = 4 * sizeof(cl_ulong); // 32 B
 
-  // size of R and S tables
-  int memSizeR = sizeof(Record) * rLen;
-  int memSizeS = sizeof(Record) * rLen;
-  void *h_R;
+  cl_ulong l3CacheSize = 0;
+  clGetDeviceInfo(Device[0], CL_DEVICE_GLOBAL_MEM_CACHE_SIZE, sizeof(cl_ulong),
+                  &l3CacheSize, NULL);
+  const size_t kCostPerEntry = 32 + 2 * 64; // struct + 2 preloaded lines
+
+  // ---- buffers allocated ONCE; data + hash table regenerated each round ----
+  int memSizeR = sizeof(Record) * rLen, memSizeS = sizeof(Record) * rLen;
+  void *h_R, *h_S;
   HOST_MALLOC(h_R, memSizeR);
-  generateRand((Record *)h_R, TEST_MAX, rLen, 0);
-  void *h_S;
   HOST_MALLOC(h_S, memSizeS);
-  generateRand((Record *)h_S, TEST_MAX, rLen, 1);
   CL_MALLOC(&D2, memSizeR);
-  cl_writebuffer(D2, h_R, memSizeR, _HandShakeCPU_GPU);
   CL_MALLOC(&D3, memSizeS);
-  cl_writebuffer(D3, h_S, memSizeS, _HandShakeCPU_GPU);
-  CL_MALLOC(&D4, rLen * sizeof(Record) + rHashTableBucketNum * sizeof(cl_uint));
-  (void)_HandShakeCPU_GPU; // Unused in this call
+  size_t hashTableBytes =
+      rLen * sizeof(Record) + rHashTableBucketNum * sizeof(cl_uint);
+  CL_MALLOC(&D4, hashTableBytes);
   cl_uint resultsNum = rLen;
-  size_t groupSize = 256, globalSize = 8192;
   CL_MALLOC(&D1, sizeof(Record) * resultsNum * 2);
-  size_t numThreadsPerBlock_x = groupSize;
-  size_t globalWorkingSetSize = globalSize;
-  cl_getKernel("build_kernel", _HandShakeKernel);
 
-  // configure build _HandShakeKernel
-  cl_int ciErr1 = clSetKernelArg((*_HandShakeKernel), 0, sizeof(cl_mem), &D2);
-  ciErr1 |= clSetKernelArg((*_HandShakeKernel), 1, sizeof(cl_mem), &D4);
-  ciErr1 |=
-      clSetKernelArg((*_HandShakeKernel), 2, sizeof(cl_uint), (void *)&rLen);
-  ciErr1 |=
-      clSetKernelArg((*_HandShakeKernel), 3, sizeof(cl_uint), (void *)&rLen);
-  ciErr1 |= clSetKernelArg((*_HandShakeKernel), 4, sizeof(cl_uint),
-                           (void *)&rHashTableBucketNum);
-
-  if (ciErr1 != CL_SUCCESS) {
-    printf("Error in clSetKernelArg, Line %u in file %s !!!\n\n", __LINE__,
-           __FILE__);
-    cl_clean(EXIT_FAILURE);
-  }
-  cl_launchKernel(1, &globalWorkingSetSize, &numThreadsPerBlock_x,
-                  _HandShakeKernel, _HandShakeCPU_GPU);
-  for (i = 0; i < Count; i++) {
-    int timer = DLL_genTimer(kid);
-    DLL_getTimer(timer);
-    cl_getKernel("probe_kernel", _HandShakeKernel);
-
-    // configure probe _HandShakeKernel
-    ciErr1 = clSetKernelArg((*_HandShakeKernel), 0, sizeof(cl_mem), &D4);
-    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 1, sizeof(cl_mem), &D3);
-    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 2, sizeof(cl_mem), &D1);
-    ciErr1 |=
-        clSetKernelArg((*_HandShakeKernel), 3, sizeof(cl_uint), (void *)&rLen);
-    ciErr1 |=
-        clSetKernelArg((*_HandShakeKernel), 4, sizeof(cl_uint), (void *)&rLen);
-    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 5, sizeof(cl_uint),
-                             (void *)&rHashTableBucketNum);
-    ciErr1 |= clSetKernelArg((*_HandShakeKernel), 6, sizeof(cl_uint),
-                             (void *)&resultsNum);
-
-    if (ciErr1 != CL_SUCCESS) {
-      printf("Error in clSetKernelArg, Line %u in file %s !!!\n\n", __LINE__,
-             __FILE__);
-      cl_clean(EXIT_FAILURE);
-    }
-    cl_launchKernel(1, &globalWorkingSetSize, &numThreadsPerBlock_x,
-                    _HandShakeKernel, _HandShakeCPU_GPU);
-    double t = DLL_getTimer(timer);
-    sum += t;
-#ifdef HandshakeDebug
-    printf("probe_kernel invocatio overhead, %f\n", t);
-#endif
-  }
-  if (_HandShakeCPU_GPU) {
-    AddGPUBurden[kid] = sum / Count * scaler;
-    printf("sum is %lf\n, probe_kernel invocatio overhead in average in GPU, "
-           "%lf\n",
-           sum, AddGPUBurden[kid]);
+  // ---- WAS sweep (mirrors filter kid=20) ----
+  //   wassize <0 noWAS 7-CU control | =0 noWAS 8-CU | >0 WAS 7-CU + helper
+  struct SweepCfg {
+    const char *label;
+    int delta;
+    int wassize;
+    int mode; // WAS helper variant: bit0=backward, bit1=spin, bit2=pause
+  };
+  // helper fixed at mode 3 (Backward + spin-loop + no-pause). Per delta:
+  // noWAS7c, noWAS8c, then WAS with wassize = num_wg * wpw for wpw doubling
+  // (1,2,4,8,...) up to wassize <= 57344.
+  static char cfgLabels[160][28];
+  struct SweepCfg cfgs[160];
+  int nc = 0;
+  int pmode = getenv("PROBE_MODE") ? atoi(getenv("PROBE_MODE")) : 3; // WAS helper mode
+  const char *onlyW = getenv("PROBE_ONLY_W");
+  if (onlyW) { // isolate ONE cfg for perf cache-miss measurement
+    int w = atoi(onlyW), dlt = 1792;
+    sprintf(cfgLabels[nc], "d%d only w%d", dlt, w);
+    cfgs[nc].label = cfgLabels[nc];
+    cfgs[nc].delta = dlt;
+    cfgs[nc].wassize = w;
+    cfgs[nc].mode = (w > 0 ? pmode : 0);
+    nc++;
   } else {
-    AddCPUBurden[kid] = sum / Count * scaler;
-    printf("sum is %lf\n, probe_kernel invocatio overhead in average in CPU, "
-           "%lf\n",
-           sum, AddCPUBurden[kid]);
+    int deltas[] = {1792}; // d=1792 deep-dive
+    int nd = (int)(sizeof(deltas) / sizeof(deltas[0]));
+    for (int di = 0; di < nd; di++) {
+      int dlt = deltas[di];
+      int num_wg = dlt / 256;
+      sprintf(cfgLabels[nc], "d%d noWAS7c", dlt);
+      cfgs[nc].label = cfgLabels[nc];
+      cfgs[nc].delta = dlt; cfgs[nc].wassize = -1; cfgs[nc].mode = 0; nc++;
+      sprintf(cfgLabels[nc], "d%d noWAS8c", dlt);
+      cfgs[nc].label = cfgLabels[nc];
+      cfgs[nc].delta = dlt; cfgs[nc].wassize = 0; cfgs[nc].mode = 0; nc++;
+      for (int wpw = 4; num_wg * wpw <= 57344; wpw *= 2) { // wassize 28..57344
+        sprintf(cfgLabels[nc], "d%d wpw%d w%d", dlt, wpw, num_wg * wpw);
+        cfgs[nc].label = cfgLabels[nc];
+        cfgs[nc].delta = dlt; cfgs[nc].wassize = num_wg * wpw;
+        cfgs[nc].mode = pmode; nc++;
+      }
+    }
   }
+  size_t n_cfgs = (size_t)nc;
+  struct SweepResult {
+    const char *label;
+    int delta, wassize;
+    double avg_ms;
+    cl_uint hits;
+  } results[160];
+  int timer = DLL_genTimer(kid);
+  cl_uint zero = 0;
+
+  // ---- Round-based design: each round regenerates the dataset + rebuilds the
+  //      hash table, then runs every cfg (x PROBE_REPS). Per-cfg stats are
+  //      accumulated (Welford) over all rounds x reps. Because every cfg sees
+  //      the SAME dataset within a round, we also accumulate the PAIRED diff
+  //      (best-WAS - noWAS8c) per delta across rounds (randomized-block test).
+  int nRounds = getenv("PROBE_ROUNDS") ? atoi(getenv("PROBE_ROUNDS")) : 1;
+  int nReps = getenv("PROBE_REPS") ? atoi(getenv("PROBE_REPS")) : 5;
+  if (nRounds < 1) nRounds = 1;
+  if (nReps < 1) nReps = 1;
+
+  double cmean[160], cM2[160], cmin[160]; // per-cfg over all rounds x reps (raw)
+  int cn[160];
+  cl_uint chits[160];
+  double pmean[160], pM2[160]; // paired (best-WAS - noWAS8c) per delta over rounds
+  int pn[160];
+  for (size_t c = 0; c < n_cfgs; c++) {
+    cmean[c] = 0; cM2[c] = 0; cmin[c] = 1e30; cn[c] = 0; chits[c] = 0;
+    pmean[c] = 0; pM2[c] = 0; pn[c] = 0;
+  }
+
+  for (int round = 0; round < nRounds; round++) {
+    // fresh dataset (distinct R/S seeds; round 0 == legacy seeds 0/1)
+    generateRand((Record *)h_R, TEST_MAX, rLen, 2 * round);
+    generateRand((Record *)h_S, TEST_MAX, rLen, 2 * round + 1);
+    cl_writebuffer(D2, h_R, memSizeR, 0);
+    cl_writebuffer(D3, h_S, memSizeS, 0);
+    { // zero the table so build_kernel atomic_inc bucket counts start fresh
+      cl_uint fzero = 0;
+      clEnqueueFillBuffer(CommandQueue[0], D4, &fzero, sizeof(cl_uint), 0,
+                          hashTableBytes, 0, NULL, NULL);
+      clFinish(CommandQueue[0]);
+    }
+    { // rebuild the hash table for this round
+      size_t bg = 8192, bl = 256;
+      cl_getKernel((char *)"build_kernel", _HandShakeKernel);
+      clSetKernelArg(*_HandShakeKernel, 0, sizeof(cl_mem), &D2);
+      clSetKernelArg(*_HandShakeKernel, 1, sizeof(cl_mem), &D4);
+      clSetKernelArg(*_HandShakeKernel, 2, sizeof(cl_uint), (void *)&rLen);
+      clSetKernelArg(*_HandShakeKernel, 3, sizeof(cl_uint), (void *)&rLen);
+      clSetKernelArg(*_HandShakeKernel, 4, sizeof(cl_uint),
+                     (void *)&rHashTableBucketNum);
+      cl_launchKernel(1, &bg, &bl, _HandShakeKernel, 0);
+    }
+    { // warm-up: 2 untimed noWAS probes absorb first-touch cost after rebuild
+      int negw = -1;
+      cl_mem nullbuf = NULL;
+      size_t wgs = 8192, wls = 256;
+      for (int w = 0; w < 2; w++) {
+        clEnqueueWriteBuffer(CommandQueue[0], D1, CL_TRUE, 0, sizeof(cl_uint),
+                             &zero, 0, NULL, NULL);
+        cl_getKernel((char *)"probe_kernel", _HandShakeKernel);
+        clSetKernelArg(*_HandShakeKernel, 0, sizeof(cl_mem), &D4);
+        clSetKernelArg(*_HandShakeKernel, 1, sizeof(cl_mem), &D3);
+        clSetKernelArg(*_HandShakeKernel, 2, sizeof(cl_mem), &D1);
+        clSetKernelArg(*_HandShakeKernel, 3, sizeof(cl_uint), (void *)&rLen);
+        clSetKernelArg(*_HandShakeKernel, 4, sizeof(cl_uint), (void *)&rLen);
+        clSetKernelArg(*_HandShakeKernel, 5, sizeof(cl_uint),
+                       (void *)&rHashTableBucketNum);
+        clSetKernelArg(*_HandShakeKernel, 6, sizeof(cl_uint), (void *)&resultsNum);
+        clSetKernelArg(*_HandShakeKernel, 7, sizeof(cl_mem), (void *)&nullbuf);
+        clSetKernelArg(*_HandShakeKernel, 8, sizeof(cl_int), (void *)&negw);
+        clSetKernelArg(*_HandShakeKernel, 9, sizeof(cl_mem), (void *)&nullbuf);
+        cl_launchKernel(1, &wgs, &wls, _HandShakeKernel, 0);
+      }
+    }
+
+    double roundTime[160]; // this round's per-cfg avg (ms), for paired diff
+    // randomized cfg execution order per round (removes cfg-position bias);
+    // seeded by round so it's reproducible. roundTime/stats stay indexed by c.
+    size_t order[160];
+    for (size_t i = 0; i < n_cfgs; i++) order[i] = i;
+    unsigned rng = (unsigned)round * 2654435761u + 12345u;
+    for (size_t i = n_cfgs; i > 1; i--) {
+      rng = rng * 1103515245u + 12345u;
+      size_t j = rng % i;
+      size_t tmp = order[i - 1]; order[i - 1] = order[j]; order[j] = tmp;
+    }
+    for (size_t oi = 0; oi < n_cfgs; oi++) {
+      size_t c = order[oi];
+      int wassize = cfgs[c].wassize;
+      // diagnostic: skip all WAS cfgs so no helper ever launches (clean noWAS)
+      if (getenv("PROBE_SKIP_WAS") && wassize > 0) { roundTime[c] = 1e9; continue; }
+      size_t globalWorkingSetSize = (size_t)cfgs[c].delta;
+      size_t numThreadsPerBlock_x = 256;
+      double sum = 0;
+      cl_uint hits = 0;
+      cl_mem was_buffer = NULL, dummy_buffer = NULL, last_tag_buffer = NULL;
+
+      if (wassize > 0) {
+        cl_int err;
+        was_buffer = clCreateBuffer(Context, CL_MEM_READ_WRITE,
+                                    wassize * wasEntrySize, NULL, &err);
+        dummy_buffer = clCreateBuffer(
+            Context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, 64, NULL, &err);
+        void *dmap = clEnqueueMapBuffer(CommandQueue[0], dummy_buffer, CL_TRUE,
+                                        CL_MAP_WRITE, 0, 64, 0, NULL, NULL, &err);
+        if (dmap) {
+          memset(dmap, 0, 64);
+          clEnqueueUnmapMemObject(CommandQueue[0], dummy_buffer, dmap, 0, NULL, NULL);
+          clFinish(CommandQueue[0]);
+        }
+        cl_ulong *wmap = (cl_ulong *)clEnqueueMapBuffer(
+            CommandQueue[0], was_buffer, CL_TRUE, CL_MAP_WRITE, 0,
+            wassize * wasEntrySize, 0, NULL, NULL, &err);
+        if (wmap) {
+          void *dmap2 = clEnqueueMapBuffer(CommandQueue[0], dummy_buffer, CL_TRUE,
+                                           CL_MAP_READ, 0, 8, 0, NULL, NULL, &err);
+          cl_ulong dummyVal = (cl_ulong)(uintptr_t)dmap2; // empty-slot sentinel
+          if (dmap2)
+            clEnqueueUnmapMemObject(CommandQueue[0], dummy_buffer, dmap2, 0, NULL, NULL);
+          for (int j = 0; j < wassize; j++) {
+            wmap[j * 4 + 0] = dummyVal;   // p1 = dummy (empty)
+            wmap[j * 4 + 1] = dummyVal;   // p2
+            wmap[j * 4 + 2] = (cl_ulong)-1; // state1 (key) — overwritten on post
+            wmap[j * 4 + 3] = (cl_ulong)-1; // state2 (val)
+          }
+          clEnqueueUnmapMemObject(CommandQueue[0], was_buffer, wmap, 0, NULL, NULL);
+          clFinish(CommandQueue[0]);
+        }
+        last_tag_buffer = clCreateBuffer(Context, CL_MEM_READ_WRITE,
+                                         wassize * sizeof(cl_ulong), NULL, &err);
+        cl_ulong *lmap = (cl_ulong *)clEnqueueMapBuffer(
+            CommandQueue[0], last_tag_buffer, CL_TRUE, CL_MAP_WRITE, 0,
+            wassize * sizeof(cl_ulong), 0, NULL, NULL, &err);
+        if (lmap) {
+          memset(lmap, 0, wassize * sizeof(cl_ulong));
+          clEnqueueUnmapMemObject(CommandQueue[0], last_tag_buffer, lmap, 0, NULL, NULL);
+          clFinish(CommandQueue[0]);
+        }
+      }
+
+      cl_kernel wasKernel = NULL;
+      if (wassize > 0 && was_buffer && dummy_buffer && last_tag_buffer &&
+          PrefetchCommandQueue && !getenv("PROBE_NO_HELPER")) {
+        cl_int kerr;
+        wasKernel = clCreateKernel(Program, "WAS_kernel", &kerr);
+        if (kerr == CL_SUCCESS) {
+          clSetKernelArg(wasKernel, 0, sizeof(cl_mem), (void *)&was_buffer);
+          clSetKernelArg(wasKernel, 1, sizeof(cl_int), (void *)&wassize);
+          clSetKernelArg(wasKernel, 2, sizeof(cl_mem), (void *)&dummy_buffer);
+          clSetKernelArg(wasKernel, 3, sizeof(cl_mem), (void *)&last_tag_buffer);
+          cl_int wmode = cfgs[c].mode;
+          clSetKernelArg(wasKernel, 4, sizeof(cl_int), (void *)&wmode);
+          size_t wg = 1, wl = 1;
+          clEnqueueNDRangeKernel(PrefetchCommandQueue, wasKernel, 1, NULL, &wg, &wl,
+                                 0, NULL, NULL);
+          clFlush(PrefetchCommandQueue);
+        }
+      }
+
+      cl_command_queue savedQ = CommandQueue[0];
+      if (wassize == 0 && FullCPUCommandQueue)
+        CommandQueue[0] = FullCPUCommandQueue;
+
+      for (int it = 0; it < nReps; it++) {
+        // reset the match counter (untimed) so it never overflows matchedTable.
+        clEnqueueWriteBuffer(CommandQueue[0], D1, CL_TRUE, 0, sizeof(cl_uint),
+                             &zero, 0, NULL, NULL);
+        DLL_getTimer(timer);
+        cl_getKernel((char *)"probe_kernel", _HandShakeKernel);
+        clSetKernelArg(*_HandShakeKernel, 0, sizeof(cl_mem), &D4); // rHashTable
+        clSetKernelArg(*_HandShakeKernel, 1, sizeof(cl_mem), &D3); // sTable
+        clSetKernelArg(*_HandShakeKernel, 2, sizeof(cl_mem), &D1); // matchedTable
+        clSetKernelArg(*_HandShakeKernel, 3, sizeof(cl_uint), (void *)&rLen);
+        clSetKernelArg(*_HandShakeKernel, 4, sizeof(cl_uint), (void *)&rLen);
+        clSetKernelArg(*_HandShakeKernel, 5, sizeof(cl_uint),
+                       (void *)&rHashTableBucketNum);
+        clSetKernelArg(*_HandShakeKernel, 6, sizeof(cl_uint), (void *)&resultsNum);
+        clSetKernelArg(*_HandShakeKernel, 7, sizeof(cl_mem), (void *)&was_buffer);
+        clSetKernelArg(*_HandShakeKernel, 8, sizeof(cl_int), (void *)&wassize);
+        clSetKernelArg(*_HandShakeKernel, 9, sizeof(cl_mem), (void *)&dummy_buffer);
+        cl_launchKernel(1, &globalWorkingSetSize, &numThreadsPerBlock_x,
+                        _HandShakeKernel, 0);
+        double t = DLL_getTimer(timer);
+        sum += t;
+        cn[c]++; // Welford over all rounds x reps
+        double wd = t - cmean[c];
+        cmean[c] += wd / cn[c];
+        cM2[c] += wd * (t - cmean[c]);
+        if (t < cmin[c]) cmin[c] = t;
+      }
+      CommandQueue[0] = savedQ;
+
+      if (wasKernel && dummy_buffer) {
+        cl_int err;
+        cl_uint *dmap = (cl_uint *)clEnqueueMapBuffer(
+            CommandQueue[0], dummy_buffer, CL_TRUE, CL_MAP_WRITE, 0, 64, 0, NULL,
+            NULL, &err);
+        if (dmap) {
+          dmap[1] = 1; // stop the helper
+          clEnqueueUnmapMemObject(CommandQueue[0], dummy_buffer, dmap, 0, NULL, NULL);
+          clFinish(CommandQueue[0]);
+        }
+        if (PrefetchCommandQueue)
+          clFinish(PrefetchCommandQueue);
+        cl_uint *cp = (cl_uint *)clEnqueueMapBuffer(CommandQueue[0], dummy_buffer,
+                                                    CL_TRUE, CL_MAP_READ, 0,
+                                                    sizeof(cl_uint), 0, NULL, NULL, &err);
+        if (cp) {
+          hits = *cp;
+          clEnqueueUnmapMemObject(CommandQueue[0], dummy_buffer, cp, 0, NULL, NULL);
+          clFinish(CommandQueue[0]);
+        }
+        clReleaseKernel(wasKernel);
+      }
+      if (was_buffer)
+        clReleaseMemObject(was_buffer);
+      if (dummy_buffer)
+        clReleaseMemObject(dummy_buffer);
+      if (last_tag_buffer)
+        clReleaseMemObject(last_tag_buffer);
+
+      chits[c] += hits;
+      roundTime[c] = (sum / nReps) * scaler; // this round's avg for this cfg
+    } // cfg loop
+
+    if (getenv("PROBE_RLOG"))
+      fprintf(stderr,
+              "[ROUND %2d] d1792 7c=%.1f 8c=%.1f wpw64=%.1f | "
+              "d114688 8c=%.1f wpw4=%.1f\n",
+              round, roundTime[0], roundTime[1], roundTime[5], roundTime[37],
+              roundTime[39]);
+
+    // paired diff for THIS round: for each noWAS8c anchor, best-WAS(same d) - it
+    for (size_t c = 0; c < n_cfgs; c++) {
+      if (cfgs[c].wassize != 0)
+        continue;
+      double bestWAS = 1e30;
+      for (size_t d = 0; d < n_cfgs; d++)
+        if (cfgs[d].wassize > 0 && cfgs[d].delta == cfgs[c].delta &&
+            roundTime[d] < bestWAS)
+          bestWAS = roundTime[d];
+      double diff = bestWAS - roundTime[c]; // >0 => WAS slower than 8c
+      pn[c]++;
+      double pd = diff - pmean[c];
+      pmean[c] += pd / pn[c];
+      pM2[c] += pd * (diff - pmean[c]);
+    }
+  } // round loop
+
+  // ---- per-cfg summary over all rounds x reps ----
+  for (size_t c = 0; c < n_cfgs; c++) {
+    int wassize = cfgs[c].wassize;
+    results[c].label = cfgs[c].label;
+    results[c].delta = cfgs[c].delta;
+    results[c].wassize = wassize;
+    results[c].avg_ms = cmean[c] * scaler;
+    results[c].hits = chits[c];
+    double std_ms = (cn[c] > 1 ? sqrt(cM2[c] / (cn[c] - 1)) : 0.0) * scaler;
+    double min_ms = cmin[c] * scaler;
+    double cv_pct =
+        (results[c].avg_ms > 0 ? 100.0 * std_ms / results[c].avg_ms : 0.0);
+    double l3_pct = (l3CacheSize > 0 && wassize > 0)
+                        ? 100.0 * (double)wassize * kCostPerEntry / (double)l3CacheSize
+                        : 0.0;
+    printf("[KID50-PROBE %2zu/%2zu] %-22s d=%6d w=%6d L3=%5.1f%% "
+           "avg=%8.2f ±%6.2f cv=%4.1f%% min=%8.2f n=%d hits=%u%s\n",
+           c + 1, n_cfgs, cfgs[c].label, cfgs[c].delta, wassize, l3_pct,
+           results[c].avg_ms, std_ms, cv_pct, min_ms, cn[c], chits[c],
+           l3_pct > 25.0 ? " §4.2>L3/4" : "");
+    fflush(stdout);
+  }
+
+  // ---- paired comparison: best-WAS - noWAS8c per delta (rounds as blocks) ----
+  printf("[KID50-PROBE PAIRED] best-WAS minus noWAS8c (rounds=%d, +ms => WAS slower)\n",
+         nRounds);
+  for (size_t c = 0; c < n_cfgs; c++) {
+    if (cfgs[c].wassize != 0 || pn[c] < 1)
+      continue;
+    double pstd = (pn[c] > 1 ? sqrt(pM2[c] / (pn[c] - 1)) : 0.0); // already ms
+    double pm = pmean[c];                                          // already ms
+    double se = (pn[c] > 0 ? pstd / sqrt((double)pn[c]) : 0.0);
+    double tval = (se > 0 ? pm / se : 0.0);
+    printf("  d=%6d  WAS-8c=%+7.2fms ±%6.2f  t=%+6.2f  %s\n", cfgs[c].delta, pm,
+           pstd, tval, pm > 0 ? "8c faster (WAS loses)" : "WAS faster");
+  }
+  fflush(stdout);
+
+  size_t best = 0;
+  for (size_t c = 1; c < n_cfgs; c++)
+    if (results[c].avg_ms < results[best].avg_ms)
+      best = c;
+  printf("[KID50-PROBE BEST] %s avg=%.2fms\n", results[best].label,
+         results[best].avg_ms);
+  AddCPUBurden[kid] = results[best].avg_ms;
 }

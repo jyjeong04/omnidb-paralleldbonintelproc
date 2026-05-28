@@ -1,0 +1,32 @@
+# started on Wed May 27 17:44:42 2026
+
+
+ Performance counter stats for 'CPU(s) 0-7':
+
+CPU0        2,783,154,209      mem_load_retired.l3_miss [cpu]                                        
+CPU1        3,255,813,464      mem_load_retired.l3_miss [cpu]                                        
+CPU2        2,972,551,784      mem_load_retired.l3_miss [cpu]                                        
+CPU3        2,727,093,388      mem_load_retired.l3_miss [cpu]                                        
+CPU4        2,728,805,783      mem_load_retired.l3_miss [cpu]                                        
+CPU5        3,636,118,557      mem_load_retired.l3_miss [cpu]                                        
+CPU6        2,637,648,138      mem_load_retired.l3_miss [cpu]                                        
+CPU7        2,536,457,440      mem_load_retired.l3_miss [cpu]                                        
+CPU0          260,097,763      mem_load_retired.l3_hit [cpu]                                         
+CPU1          255,846,758      mem_load_retired.l3_hit [cpu]                                         
+CPU2          237,843,552      mem_load_retired.l3_hit [cpu]                                         
+CPU3          217,374,562      mem_load_retired.l3_hit [cpu]                                         
+CPU4          214,999,163      mem_load_retired.l3_hit [cpu]                                         
+CPU5          139,977,717      mem_load_retired.l3_hit [cpu]                                         
+CPU6          214,472,768      mem_load_retired.l3_hit [cpu]                                         
+CPU7          210,288,640      mem_load_retired.l3_hit [cpu]                                         
+CPU0    1,628,068,022,185      cycles                                                                
+CPU1    1,643,827,861,203      cycles                                                                
+CPU2    1,658,382,257,065      cycles                                                                
+CPU3    1,633,702,052,454      cycles                                                                
+CPU4    1,646,698,571,975      cycles                                                                
+CPU5    1,634,341,344,937      cycles                                                                
+CPU6    1,614,112,931,360      cycles                                                                
+CPU7    1,564,696,229,853      cycles                                                                
+
+     382.455974987 seconds time elapsed
+

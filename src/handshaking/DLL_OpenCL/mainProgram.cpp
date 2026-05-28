@@ -40,7 +40,9 @@ pthread_mutex_t GPUBurdenCS = PTHREAD_MUTEX_INITIALIZER;
 cl_device_id PrefetchSubDevice = NULL; // 1-CU sub-device for prefetching
 cl_device_id MainCPUSubDevice = NULL;  // Remaining CUs sub-device
 cl_command_queue PrefetchCommandQueue =
-    NULL;                  // Dedicated prefetch command queue
+    NULL; // Dedicated prefetch command queue
+cl_command_queue FullCPUCommandQueue =
+    NULL;                  // Full 8-CU CPU queue (for noWAS launches)
 int g_prefetchEnabled = 0; // 1 = prefetching active
 int g_prefetchWASSize = 0; // Work-ahead set size (auto-configured)
 
@@ -283,7 +285,7 @@ void handShaking() {
   int CPU_GPU = 0;
   int kid;
   cl_kernel testkernel;
-  for (kid = 20; kid < 51; kid++) {
+  for (kid = 50; kid < 51; kid++) {
     for (CPU_GPU = 0; CPU_GPU < 2; CPU_GPU++) {
       printf("CPU_GPU:%d, KID:%d\n", CPU_GPU, kid);
       switch (kid) {
