@@ -14,6 +14,7 @@ extern cl_context Context;                    // OpenCL context
 extern cl_command_queue CommandQueue[2];      // OpenCL command queues
 extern cl_command_queue PrefetchCommandQueue; // WAS prefetch queue
 extern cl_program Program;                    // OpenCL program
+extern cl_device_id Device[2];                // OpenCL device (for L3 query)
 extern double
     AddGPUBurden_Copy; //->initial in handshaking. fix rLen to 1024*1024
 extern double AddCPUBurden_Copy;

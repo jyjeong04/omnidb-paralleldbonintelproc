@@ -829,9 +829,10 @@ filterImpl_map_kernel(__global Record *d_Rin, int beginPos, int rLen,
       } else {
         flag = 0;
       }
-      d_mark[pos] = flag;
+    return;
     }
-  } else {
+
+  // M1 — was_per_wi: WI i 가 [i*K, i*K+K) 슬롯 소유. race-free if K≥1.
     int was_per_wi = wassize / delta;
     int was_base = iGID * was_per_wi;
     int was_step = 0;
@@ -842,18 +843,12 @@ filterImpl_map_kernel(__global Record *d_Rin, int beginPos, int rLen,
       was_step++;
       if (was_step >= was_per_wi)
         was_step = 0;
-
-      if (old.state1 >= 0 && old.state1 < rLen) {
         int old_pos = (int)old.state1;
-        value = d_Rin[old_pos];
+    if (old_pos >= 0 && old_pos < rLen) {
+      Record value = d_Rin[old_pos];
         d_temp[old_pos] = value.x;
         int key = value.y;
-        if ((key >= smallKey) && (key <= largeKey)) {
-          flag = 1;
-        } else {
-          flag = 0;
-        }
-        d_mark[old_pos] = flag;
+      d_mark[old_pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
       }
     }
 
