@@ -1,5 +1,8 @@
 {
   "enabledPlugins": {
     "superpowers@superpowers-marketplace": true
+  },
+  "permissions": {
+    "defaultMode": "auto"
   }
 }

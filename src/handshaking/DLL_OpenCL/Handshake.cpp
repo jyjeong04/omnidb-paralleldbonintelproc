@@ -2363,10 +2363,90 @@ void build_kernel_handshake(int _HandShakeCPU_GPU,
 }
 void probe_kernel_handshake(int _HandShakeCPU_GPU,
                             cl_kernel *_HandShakeKernel) {
-  // CPU-only: the WG-shared WAS post races under GPU SIMD; on PoCL CPU the
-  // work-items of a work-group run sequentially, so it is race-free.
-  if (_HandShakeCPU_GPU == 1)
+  // GPU path: run the main kernel (E) via the noWAS path (no post()).
+  // Posting-WAS needs live CPU<->GPU coherence, which PoCL Level0 does not
+  // provide (verified by PROBE_GPU_TEST=3: GPU SVM writes are visible to the
+  // CPU only at clFinish, not during concurrent execution). On the GPU we
+  // therefore always take the wassize<=0 (noWAS) branch of probe_kernel.
+  if (_HandShakeCPU_GPU == 1) {
+    double scaler = 1000;
+    int kid = 50;
+    cl_uint rHashTableBucketNum = 2 * 1024 * 1024;
+    int memSizeR = sizeof(Record) * rLen, memSizeS = sizeof(Record) * rLen;
+    size_t hashTableBytes =
+        rLen * sizeof(Record) + rHashTableBucketNum * sizeof(cl_uint);
+    cl_uint resultsNum = rLen, zero = 0, matched = 0;
+    int wassize = -1; // noWAS path inside probe_kernel
+    cl_mem nullbuf = NULL;
+    size_t gGlobal = getenv("GPU_DELTA") ? (size_t)atoi(getenv("GPU_DELTA"))
+                                         : 14336;
+    size_t gLocal = 256;
+    int reps = getenv("PROBE_REPS") ? atoi(getenv("PROBE_REPS")) : 3;
+
+    void *h_R, *h_S;
+    HOST_MALLOC(h_R, memSizeR);
+    HOST_MALLOC(h_S, memSizeS);
+    CL_MALLOC(&D2, memSizeR);
+    CL_MALLOC(&D3, memSizeS);
+    CL_MALLOC(&D4, hashTableBytes);
+    CL_MALLOC(&D1, sizeof(Record) * resultsNum * 2);
+    generateRand((Record *)h_R, TEST_MAX, rLen, 0);
+    generateRand((Record *)h_S, TEST_MAX, rLen, 1);
+    cl_writebuffer(D2, h_R, memSizeR, 0);
+    cl_writebuffer(D3, h_S, memSizeS, 0);
+    clEnqueueFillBuffer(CommandQueue[0], D4, &zero, sizeof(cl_uint), 0,
+                        hashTableBytes, 0, NULL, NULL);
+    clFinish(CommandQueue[0]);
+    { // build the hash table on the CPU queue (shared via the context)
+      size_t bg = 8192, bl = 256;
+      cl_getKernel((char *)"build_kernel", _HandShakeKernel);
+      clSetKernelArg(*_HandShakeKernel, 0, sizeof(cl_mem), &D2);
+      clSetKernelArg(*_HandShakeKernel, 1, sizeof(cl_mem), &D4);
+      clSetKernelArg(*_HandShakeKernel, 2, sizeof(cl_uint), (void *)&rLen);
+      clSetKernelArg(*_HandShakeKernel, 3, sizeof(cl_uint), (void *)&rLen);
+      clSetKernelArg(*_HandShakeKernel, 4, sizeof(cl_uint),
+                     (void *)&rHashTableBucketNum);
+      cl_launchKernel(1, &bg, &bl, _HandShakeKernel, 0);
+    }
+
+    int timer = DLL_genTimer(kid);
+    double sum = 0;
+    for (int it = 0; it < reps; it++) {
+      clEnqueueWriteBuffer(CommandQueue[1], D1, CL_TRUE, 0, sizeof(cl_uint),
+                           &zero, 0, NULL, NULL);
+      clFinish(CommandQueue[1]);
+      DLL_getTimer(timer);
+      cl_getKernel((char *)"probe_kernel", _HandShakeKernel);
+      clSetKernelArg(*_HandShakeKernel, 0, sizeof(cl_mem), &D4);
+      clSetKernelArg(*_HandShakeKernel, 1, sizeof(cl_mem), &D3);
+      clSetKernelArg(*_HandShakeKernel, 2, sizeof(cl_mem), &D1);
+      clSetKernelArg(*_HandShakeKernel, 3, sizeof(cl_uint), (void *)&rLen);
+      clSetKernelArg(*_HandShakeKernel, 4, sizeof(cl_uint), (void *)&rLen);
+      clSetKernelArg(*_HandShakeKernel, 5, sizeof(cl_uint),
+                     (void *)&rHashTableBucketNum);
+      clSetKernelArg(*_HandShakeKernel, 6, sizeof(cl_uint), (void *)&resultsNum);
+      clSetKernelArg(*_HandShakeKernel, 7, sizeof(cl_mem), (void *)&nullbuf);
+      clSetKernelArg(*_HandShakeKernel, 8, sizeof(cl_int), (void *)&wassize);
+      clSetKernelArg(*_HandShakeKernel, 9, sizeof(cl_mem), (void *)&nullbuf);
+      // launch the main kernel (E) on the GPU queue
+      cl_int e = clEnqueueNDRangeKernel(CommandQueue[1], *_HandShakeKernel, 1,
+                                        NULL, &gGlobal, &gLocal, 0, NULL, NULL);
+      cl_int f = clFinish(CommandQueue[1]);
+      sum += DLL_getTimer(timer);
+      if (e != CL_SUCCESS || f != CL_SUCCESS)
+        printf("[KID50-GPU] launch error: enqueue=%d finish=%d\n", e, f);
+    }
+    clEnqueueReadBuffer(CommandQueue[1], D1, CL_TRUE, 0, sizeof(cl_uint),
+                        &matched, 0, NULL, NULL);
+    AddGPUBurden[kid] = sum / reps * scaler;
+    printf("[KID50-GPU] noWAS probe on GPU: avg=%.2fms matched=%u delta=%zu "
+           "reps=%d\n",
+           AddGPUBurden[kid], matched, gGlobal, reps);
+    fflush(stdout);
+    HOST_FREE(h_R);
+    HOST_FREE(h_S);
     return;
+  }
   double scaler = 1000;
   int kid = 50;
   printf("Kid%d probe WAS sweep mode (CPU)\n", kid);
@@ -2390,6 +2470,356 @@ void probe_kernel_handshake(int _HandShakeCPU_GPU,
   CL_MALLOC(&D4, hashTableBytes);
   cl_uint resultsNum = rLen;
   CL_MALLOC(&D1, sizeof(Record) * resultsNum * 2);
+
+  // ===== P+GPU verification ladder (systematic-debugging boundary tests) =====
+  // PROBE_GPU_TEST=1 : Stage A — run probe_kernel (E) on the GPU alone, noWAS.
+  //   Confirms the PoCL Level0 GPU can execute the operator at all. No helper,
+  //   no shared WAS pointers (those need coherent cross-device addresses / SVM,
+  //   which is Stage B and where the prior Level0 hang lived).
+  // GPU_DELTA overrides the launch size (default 14336 = 56 work-groups).
+  if (getenv("PROBE_GPU_TEST")) {
+    int stage = atoi(getenv("PROBE_GPU_TEST")); // 1=A (GPU alone), 2=B1 (concurrency)
+    int gpuDelta = getenv("GPU_DELTA") ? atoi(getenv("GPU_DELTA")) : 14336;
+    size_t gGlobal = (size_t)gpuDelta, gLocal = 256;
+    cl_uint zero = 0, matched = 0;
+    cl_int err;
+    cl_mem nullbuf = NULL;
+    int wassize = -1; // noWAS path inside probe_kernel
+    fprintf(stderr, "[GPUTEST] stage=%d, probe (E) on GPU device, delta=%d\n",
+            stage, gpuDelta);
+    fflush(stderr);
+
+    // ===== Stage B2: fine-grained SVM coherence (GPU producer -> CPU consumer)
+    // Smallest test of the posting-WAS requirement: can a CPU kernel observe,
+    // during concurrent execution, what a GPU kernel writes to a shared
+    // fine-grained SVM buffer? Hang here ⇒ coherent posting-WAS is blocked.
+    if (stage == 3) {
+      const cl_uint N = 256;
+      size_t svmBytes = (N + 2) * sizeof(cl_uint);
+      cl_uint *svm = (cl_uint *)clSVMAlloc(
+          Context, CL_MEM_READ_WRITE | CL_MEM_SVM_FINE_GRAIN_BUFFER, svmBytes, 0);
+      fprintf(stderr, "[GPUTEST-B2] clSVMAlloc(fine-grain) = %p\n", (void *)svm);
+      fflush(stderr);
+      if (!svm) {
+        fprintf(stderr,
+                "[GPUTEST-B2] SVM alloc FAILED -> coherent posting-WAS impossible\n");
+        return;
+      }
+      for (cl_uint i = 0; i < N + 2; i++)
+        svm[i] = 0; // host writes directly (fine-grained, no map needed)
+
+      cl_kernel prod = clCreateKernel(Program, "svm_producer", &err);
+      cl_kernel cons = clCreateKernel(Program, "svm_consumer", &err);
+      cl_command_queue cq =
+          PrefetchCommandQueue ? PrefetchCommandQueue : CommandQueue[0];
+      clSetKernelArgSVMPointer(cons, 0, svm);
+      clSetKernelArg(cons, 1, sizeof(cl_uint), &N);
+      clSetKernelArgSVMPointer(prod, 0, svm);
+      clSetKernelArg(prod, 1, sizeof(cl_uint), &N);
+      size_t g1 = 1, l1 = 1;
+      fprintf(stderr, "[GPUTEST-B2] launch consumer on CPU (spins on svm[0])\n");
+      fflush(stderr);
+      err = clEnqueueNDRangeKernel(cq, cons, 1, NULL, &g1, &l1, 0, NULL, NULL);
+      clFlush(cq);
+      fprintf(stderr,
+              "[GPUTEST-B2] consumer rc=%d; launch producer on GPU\n", err);
+      fflush(stderr);
+      err = clEnqueueNDRangeKernel(CommandQueue[1], prod, 1, NULL, &g1, &l1, 0,
+                                   NULL, NULL);
+      fprintf(stderr, "[GPUTEST-B2] producer rc=%d; before clFinish(GPU)\n", err);
+      fflush(stderr);
+      err = clFinish(CommandQueue[1]);
+      fprintf(stderr,
+              "[GPUTEST-B2] after clFinish(GPU) rc=%d; before clFinish(CPU "
+              "consumer)\n",
+              err);
+      fflush(stderr);
+      err = clFinish(cq);
+      fprintf(stderr,
+              "[GPUTEST-B2] after clFinish(consumer) rc=%d  <-- consumer "
+              "returned\n",
+              err);
+      fflush(stderr);
+      cl_uint expected = 0;
+      for (cl_uint i = 0; i < N; i++)
+        expected += i * 7u + 1u;
+      fprintf(stderr,
+              "[GPUTEST-B2] flag=%u sum=%u expected=%u  %s\n", svm[0],
+              svm[N + 1], expected,
+              svm[N + 1] == expected ? "COHERENT-OK"
+              : svm[N + 1] == 0xDEADBEEFu ? "NO-COHERENCE(escape)"
+                                          : "PARTIAL/ORDERING");
+      fflush(stderr);
+      clReleaseKernel(prod);
+      clReleaseKernel(cons);
+      clSVMFree(Context, svm);
+      return;
+    }
+
+    // ===== Stage C: does CPU LLC-warming accelerate iGPU reads? =====
+    // Gate test for decoupled GPU-E prefetch. A fine-grained SVM buffer (shared
+    // physical memory ⇒ shared ring LLC) is GPU stream-read; we compare the GPU
+    // read time COLD (buf evicted via a 32MB junk flush) vs WARM (CPU reads buf
+    // into the LLC first). warm<cold ⇒ CPU warming reaches the iGPU. SVM_MB sets
+    // the buffer size (sweep around L3=12MB).
+    if (stage == 4) {
+      size_t mb = getenv("SVM_MB") ? (size_t)atoi(getenv("SVM_MB")) : 4;
+      size_t n = mb * 1024 * 1024 / sizeof(cl_uint);
+      size_t junkN = (size_t)32 * 1024 * 1024 / sizeof(cl_uint);
+      int rps = getenv("PROBE_REPS") ? atoi(getenv("PROBE_REPS")) : 12;
+      cl_uint *buf = (cl_uint *)clSVMAlloc(
+          Context, CL_MEM_READ_WRITE | CL_MEM_SVM_FINE_GRAIN_BUFFER,
+          n * sizeof(cl_uint), 0);
+      if (!buf) {
+        fprintf(stderr, "[GPUTEST-C] SVM alloc FAILED\n");
+        return;
+      }
+      for (size_t i = 0; i < n; i++)
+        buf[i] = (cl_uint)(i * 2654435761u + 1u);
+      cl_uint *junk = (cl_uint *)malloc(junkN * sizeof(cl_uint));
+      for (size_t i = 0; i < junkN; i++)
+        junk[i] = (cl_uint)i;
+      volatile unsigned long long sink = 0;
+      size_t gG = 4096, gL = 256;
+      cl_mem outb = clCreateBuffer(Context, CL_MEM_WRITE_ONLY,
+                                   gG * sizeof(cl_uint), NULL, &err);
+      cl_uint nn = (cl_uint)n;
+      cl_uint reads = getenv("READS") ? (cl_uint)atoi(getenv("READS")) : 8192;
+      int t = DLL_genTimer(50);
+      double tCold = 0, tWarm = 0;
+      void *svms[1] = {buf};
+      for (int it = 0; it < rps; it++) {
+        cl_getKernel((char *)"gpu_random_sum", _HandShakeKernel);
+        clSetKernelArgSVMPointer(*_HandShakeKernel, 0, buf);
+        clSetKernelArg(*_HandShakeKernel, 1, sizeof(cl_uint), &nn);
+        clSetKernelArg(*_HandShakeKernel, 2, sizeof(cl_uint), &reads);
+        clSetKernelArg(*_HandShakeKernel, 3, sizeof(cl_mem), &outb);
+        clSetKernelExecInfo(*_HandShakeKernel, CL_KERNEL_EXEC_INFO_SVM_PTRS,
+                            sizeof(svms), svms);
+        // COLD: flush LLC with junk, then GPU read
+        for (size_t j = 0; j < junkN; j++) sink += junk[j];
+        DLL_getTimer(t);
+        clEnqueueNDRangeKernel(CommandQueue[1], *_HandShakeKernel, 1, NULL, &gG,
+                               &gL, 0, NULL, NULL);
+        clFinish(CommandQueue[1]);
+        double c = DLL_getTimer(t);
+        // WARM: flush, then CPU reads buf into LLC, then GPU read
+        for (size_t j = 0; j < junkN; j++) sink += junk[j];
+        for (size_t i = 0; i < n; i++) sink += buf[i];
+        DLL_getTimer(t);
+        clEnqueueNDRangeKernel(CommandQueue[1], *_HandShakeKernel, 1, NULL, &gG,
+                               &gL, 0, NULL, NULL);
+        clFinish(CommandQueue[1]);
+        double w = DLL_getTimer(t);
+        if (it >= 2) { tCold += c; tWarm += w; } // skip 2 warm-up reps
+      }
+      int eff = rps > 2 ? rps - 2 : rps;
+      fprintf(stderr,
+              "[GPUTEST-C] SVM_MB=%zu (L3=12MB) GPU read cold=%.3fms "
+              "warm=%.3fms  warm/cold=%.2f  %s (sink=%llu)\n",
+              mb, tCold / eff * 1000, tWarm / eff * 1000, tWarm / tCold,
+              tWarm < tCold * 0.95 ? "WARMING-HELPS"
+                                   : "no-benefit",
+              sink);
+      fflush(stderr);
+      clSVMFree(Context, buf);
+      clReleaseMemObject(outb);
+      free(junk);
+      return;
+    }
+
+    // 1) data + hash table (built on the CPU queue; D4 shared via the context)
+    generateRand((Record *)h_R, TEST_MAX, rLen, 0);
+    generateRand((Record *)h_S, TEST_MAX, rLen, 1);
+    cl_writebuffer(D2, h_R, memSizeR, 0);
+    cl_writebuffer(D3, h_S, memSizeS, 0);
+    clEnqueueFillBuffer(CommandQueue[0], D4, &zero, sizeof(cl_uint), 0,
+                        hashTableBytes, 0, NULL, NULL);
+    clFinish(CommandQueue[0]);
+    {
+      size_t bg = 8192, bl = 256;
+      cl_getKernel((char *)"build_kernel", _HandShakeKernel);
+      clSetKernelArg(*_HandShakeKernel, 0, sizeof(cl_mem), &D2);
+      clSetKernelArg(*_HandShakeKernel, 1, sizeof(cl_mem), &D4);
+      clSetKernelArg(*_HandShakeKernel, 2, sizeof(cl_uint), (void *)&rLen);
+      clSetKernelArg(*_HandShakeKernel, 3, sizeof(cl_uint), (void *)&rLen);
+      clSetKernelArg(*_HandShakeKernel, 4, sizeof(cl_uint),
+                     (void *)&rHashTableBucketNum);
+      cl_launchKernel(1, &bg, &bl, _HandShakeKernel, 0); // build on CPU
+    }
+    fprintf(stderr, "[GPUTEST] hash table built (CPU)\n");
+    fflush(stderr);
+
+    // ===== Stage B1: CPU helper (P, mode 3) concurrent with GPU main (E) =====
+    // No shared WAS pointers: the helper spins over an all-dummy WAS set (never
+    // dereferences), and the GPU main runs noWAS. This isolates (a) CPU+GPU
+    // concurrency and (b) helper termination after the GPU kernel finishes
+    // (the prior "WAS_kernel never terminates / infinite loop" bug).
+    if (stage >= 2) {
+      int num_wg = gpuDelta / 256;
+      int wsz = num_wg * 16; // helper just spins over this many dummy slots
+      cl_mem was_b = clCreateBuffer(Context, CL_MEM_READ_WRITE,
+                                    wsz * wasEntrySize, NULL, &err);
+      cl_mem ctrl_b = clCreateBuffer(
+          Context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, 64, NULL, &err);
+      cl_mem ltag_b = clCreateBuffer(Context, CL_MEM_READ_WRITE,
+                                     wsz * sizeof(cl_ulong), NULL, &err);
+      // ctrl = {0,0,...}
+      void *cmap = clEnqueueMapBuffer(CommandQueue[0], ctrl_b, CL_TRUE,
+                                      CL_MAP_WRITE, 0, 64, 0, NULL, NULL, &err);
+      memset(cmap, 0, 64);
+      clEnqueueUnmapMemObject(CommandQueue[0], ctrl_b, cmap, 0, NULL, NULL);
+      clFinish(CommandQueue[0]);
+      // dummyVal sentinel = ctrl host address (ALLOC_HOST_PTR ⇒ CPU sees same)
+      void *dmap2 = clEnqueueMapBuffer(CommandQueue[0], ctrl_b, CL_TRUE,
+                                       CL_MAP_READ, 0, 8, 0, NULL, NULL, &err);
+      cl_ulong dummyVal = (cl_ulong)(uintptr_t)dmap2;
+      clEnqueueUnmapMemObject(CommandQueue[0], ctrl_b, dmap2, 0, NULL, NULL);
+      cl_ulong *wmap = (cl_ulong *)clEnqueueMapBuffer(
+          CommandQueue[0], was_b, CL_TRUE, CL_MAP_WRITE, 0, wsz * wasEntrySize, 0,
+          NULL, NULL, &err);
+      for (int j = 0; j < wsz; j++) {
+        wmap[j * 4 + 0] = dummyVal;
+        wmap[j * 4 + 1] = dummyVal;
+        wmap[j * 4 + 2] = (cl_ulong)-1;
+        wmap[j * 4 + 3] = (cl_ulong)-1;
+      }
+      clEnqueueUnmapMemObject(CommandQueue[0], was_b, wmap, 0, NULL, NULL);
+      cl_ulong *lmap = (cl_ulong *)clEnqueueMapBuffer(
+          CommandQueue[0], ltag_b, CL_TRUE, CL_MAP_WRITE, 0,
+          wsz * sizeof(cl_ulong), 0, NULL, NULL, &err);
+      memset(lmap, 0, wsz * sizeof(cl_ulong));
+      clEnqueueUnmapMemObject(CommandQueue[0], ltag_b, lmap, 0, NULL, NULL);
+      clFinish(CommandQueue[0]);
+      // launch helper (mode 3 = backward+spin+nopause) on CPU prefetch sub-device
+      cl_kernel hk = clCreateKernel(Program, "WAS_kernel", &err);
+      cl_int wmode = 3;
+      clSetKernelArg(hk, 0, sizeof(cl_mem), &was_b);
+      clSetKernelArg(hk, 1, sizeof(cl_int), &wsz);
+      clSetKernelArg(hk, 2, sizeof(cl_mem), &ctrl_b);
+      clSetKernelArg(hk, 3, sizeof(cl_mem), &ltag_b);
+      clSetKernelArg(hk, 4, sizeof(cl_int), &wmode);
+      cl_command_queue hq =
+          PrefetchCommandQueue ? PrefetchCommandQueue : CommandQueue[0];
+      size_t wg1 = 1, wl1 = 1;
+      cl_int he = clEnqueueNDRangeKernel(hq, hk, 1, NULL, &wg1, &wl1, 0, NULL,
+                                         NULL);
+      clFlush(hq);
+      fprintf(stderr,
+              "[GPUTEST-B1] helper launched rc=%d on %s (wsz=%d, mode=3)\n", he,
+              PrefetchCommandQueue ? "PrefetchQ" : "CQ0", wsz);
+      fflush(stderr);
+
+      // GPU main probe (noWAS), concurrent with the spinning CPU helper
+      clEnqueueWriteBuffer(CommandQueue[0], D1, CL_TRUE, 0, sizeof(cl_uint),
+                           &zero, 0, NULL, NULL);
+      clFinish(CommandQueue[0]);
+      cl_getKernel((char *)"probe_kernel", _HandShakeKernel);
+      clSetKernelArg(*_HandShakeKernel, 0, sizeof(cl_mem), &D4);
+      clSetKernelArg(*_HandShakeKernel, 1, sizeof(cl_mem), &D3);
+      clSetKernelArg(*_HandShakeKernel, 2, sizeof(cl_mem), &D1);
+      clSetKernelArg(*_HandShakeKernel, 3, sizeof(cl_uint), (void *)&rLen);
+      clSetKernelArg(*_HandShakeKernel, 4, sizeof(cl_uint), (void *)&rLen);
+      clSetKernelArg(*_HandShakeKernel, 5, sizeof(cl_uint),
+                     (void *)&rHashTableBucketNum);
+      clSetKernelArg(*_HandShakeKernel, 6, sizeof(cl_uint), (void *)&resultsNum);
+      clSetKernelArg(*_HandShakeKernel, 7, sizeof(cl_mem), (void *)&nullbuf);
+      clSetKernelArg(*_HandShakeKernel, 8, sizeof(cl_int), (void *)&wassize);
+      clSetKernelArg(*_HandShakeKernel, 9, sizeof(cl_mem), (void *)&nullbuf);
+      fprintf(stderr, "[GPUTEST-B1] before GPU main enqueue (helper spinning)\n");
+      fflush(stderr);
+      err = clEnqueueNDRangeKernel(CommandQueue[1], *_HandShakeKernel, 1, NULL,
+                                   &gGlobal, &gLocal, 0, NULL, NULL);
+      fprintf(stderr, "[GPUTEST-B1] GPU enqueue rc=%d; before clFinish(GPU)\n",
+              err);
+      fflush(stderr);
+      err = clFinish(CommandQueue[1]);
+      fprintf(stderr,
+              "[GPUTEST-B1] after clFinish(GPU) rc=%d  <-- GPU done while helper "
+              "ran\n",
+              err);
+      fflush(stderr);
+
+      // stop the helper and confirm it terminates
+      cl_uint *cstop = (cl_uint *)clEnqueueMapBuffer(
+          CommandQueue[0], ctrl_b, CL_TRUE, CL_MAP_WRITE, 0, 64, 0, NULL, NULL,
+          &err);
+      cstop[1] = 1; // ctrl[1] = stop
+      clEnqueueUnmapMemObject(CommandQueue[0], ctrl_b, cstop, 0, NULL, NULL);
+      clFinish(CommandQueue[0]);
+      fprintf(stderr, "[GPUTEST-B1] ctrl[1]=1 set; before clFinish(helperQ)\n");
+      fflush(stderr);
+      err = clFinish(hq);
+      fprintf(stderr,
+              "[GPUTEST-B1] after clFinish(helperQ) rc=%d  <-- HELPER "
+              "TERMINATED\n",
+              err);
+      fflush(stderr);
+
+      cl_uint mm = 0;
+      clEnqueueReadBuffer(CommandQueue[0], D1, CL_TRUE, 0, sizeof(cl_uint), &mm,
+                          0, NULL, NULL);
+      fprintf(stderr,
+              "[GPUTEST-B1] DONE  GPU matched=%u  (concurrency + termination "
+              "OK)\n",
+              mm);
+      fflush(stderr);
+      clReleaseKernel(hk);
+      clReleaseMemObject(was_b);
+      clReleaseMemObject(ctrl_b);
+      clReleaseMemObject(ltag_b);
+      return;
+    }
+
+    // 2) set probe args (shared by the CPU baseline and the GPU run)
+    cl_getKernel((char *)"probe_kernel", _HandShakeKernel);
+    clSetKernelArg(*_HandShakeKernel, 0, sizeof(cl_mem), &D4);
+    clSetKernelArg(*_HandShakeKernel, 1, sizeof(cl_mem), &D3);
+    clSetKernelArg(*_HandShakeKernel, 2, sizeof(cl_mem), &D1);
+    clSetKernelArg(*_HandShakeKernel, 3, sizeof(cl_uint), (void *)&rLen);
+    clSetKernelArg(*_HandShakeKernel, 4, sizeof(cl_uint), (void *)&rLen);
+    clSetKernelArg(*_HandShakeKernel, 5, sizeof(cl_uint),
+                   (void *)&rHashTableBucketNum);
+    clSetKernelArg(*_HandShakeKernel, 6, sizeof(cl_uint), (void *)&resultsNum);
+    clSetKernelArg(*_HandShakeKernel, 7, sizeof(cl_mem), (void *)&nullbuf);
+    clSetKernelArg(*_HandShakeKernel, 8, sizeof(cl_int), (void *)&wassize);
+    clSetKernelArg(*_HandShakeKernel, 9, sizeof(cl_mem), (void *)&nullbuf);
+
+    // 2a) CPU baseline (correctness reference, same data/seeds)
+    clEnqueueWriteBuffer(CommandQueue[0], D1, CL_TRUE, 0, sizeof(cl_uint), &zero,
+                         0, NULL, NULL);
+    clFinish(CommandQueue[0]);
+    {
+      size_t cg = gGlobal, clo = gLocal;
+      cl_launchKernel(1, &cg, &clo, _HandShakeKernel, 0); // CPU (clFinish inside)
+    }
+    cl_uint matched_cpu = 0;
+    clEnqueueReadBuffer(CommandQueue[0], D1, CL_TRUE, 0, sizeof(cl_uint),
+                        &matched_cpu, 0, NULL, NULL);
+    fprintf(stderr, "[GPUTEST] CPU baseline matched=%u\n", matched_cpu);
+    fflush(stderr);
+
+    // 2b) same probe on the GPU device
+    clEnqueueWriteBuffer(CommandQueue[0], D1, CL_TRUE, 0, sizeof(cl_uint), &zero,
+                         0, NULL, NULL);
+    clFinish(CommandQueue[0]);
+    fprintf(stderr, "[GPUTEST] before GPU enqueue (CommandQueue[1])\n");
+    fflush(stderr);
+    err = clEnqueueNDRangeKernel(CommandQueue[1], *_HandShakeKernel, 1, NULL,
+                                 &gGlobal, &gLocal, 0, NULL, NULL);
+    fprintf(stderr, "[GPUTEST] enqueue rc=%d; before clFinish(GPU)\n", err);
+    fflush(stderr);
+    err = clFinish(CommandQueue[1]);
+    fprintf(stderr, "[GPUTEST] after clFinish(GPU) rc=%d\n", err);
+    fflush(stderr);
+    clEnqueueReadBuffer(CommandQueue[0], D1, CL_TRUE, 0, sizeof(cl_uint),
+                        &matched, 0, NULL, NULL);
+    fprintf(stderr, "[GPUTEST] GPU matched=%u  CPU=%u  %s  (delta=%d)\n", matched,
+            matched_cpu, matched == matched_cpu ? "MATCH-OK" : "MISMATCH!!",
+            gpuDelta);
+    fflush(stderr);
+    return;
+  }
 
   // ---- WAS sweep (mirrors filter kid=20) ----
   //   wassize <0 noWAS 7-CU control | =0 noWAS 8-CU | >0 WAS 7-CU + helper

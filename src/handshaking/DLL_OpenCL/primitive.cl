@@ -2598,3 +2598,60 @@ __kernel void WAS_kernel(volatile __global WASEntry *was_buffer,
   ctrl[0] += count;
 }
 //<<<WASK_END
+
+// ===== Minimal fine-grained SVM coherence probe (GPU writes -> CPU reads) =====
+// Mirrors the posting-WAS pattern: a GPU kernel produces data into a shared
+// fine-grained SVM buffer and sets a flag; a CPU kernel spins until it observes
+// the flag (cross-device coherence), then consumes the data. Single work-item
+// each, so writes are in program order within the producer (data before flag).
+__kernel void svm_producer(__global volatile uint *p, uint n) {
+  if (get_global_id(0) != 0)
+    return;
+  for (uint i = 0; i < n; i++)
+    p[1 + i] = i * 7u + 1u; // data
+  for (volatile uint k = 0; k < 200000u; k++) {
+  } // small delay so the consumer is genuinely spinning first
+  p[0] = 12345u; // flag last (program order)
+}
+__kernel void svm_consumer(__global volatile uint *p, uint n) {
+  if (get_global_id(0) != 0)
+    return;
+  uint guard = 0;
+  while (p[0] != 12345u) { // spin until the GPU's flag becomes visible
+    if (++guard > 2000000000u) {
+      p[n + 1] = 0xDEADBEEFu; // anti-hang escape (coherence never delivered)
+      return;
+    }
+  }
+  uint s = 0;
+  for (uint i = 0; i < n; i++)
+    s += p[1 + i];
+  p[n + 1] = s; // result the host checks
+}
+
+// GPU stream-read kernel for the LLC-warming microbenchmark: reads all of buf
+// (memory-bound) so its time reflects whether buf is served from the shared
+// LLC (warm) or DRAM (cold). out is write-only sink (forces the reads).
+__kernel void gpu_stream_sum(__global const uint *buf, uint n,
+                             __global uint *out) {
+  uint tid = get_global_id(0), nw = get_global_size(0);
+  uint s = 0;
+  for (uint i = tid; i < n; i += nw)
+    s += buf[i];
+  out[tid] = s;
+}
+
+// Random (latency-bound) read kernel: each work-item walks a pseudo-random
+// dependent chain of `reads` accesses into buf. This is the access pattern
+// where shared-LLC residency (warm) matters vs DRAM (cold) — unlike the
+// bandwidth-bound sequential sum above.
+__kernel void gpu_random_sum(__global const uint *buf, uint n, uint reads,
+                             __global uint *out) {
+  uint tid = get_global_id(0);
+  uint s = 0, idx = tid * 2654435761u + 1u;
+  for (uint k = 0; k < reads; k++) {
+    idx = (idx * 2654435761u + 12345u) % n; // dependent random walk
+    s += buf[idx];
+  }
+  out[tid] = s;
+}

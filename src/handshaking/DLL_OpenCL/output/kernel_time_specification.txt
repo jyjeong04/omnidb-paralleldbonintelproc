@@ -2837,3 +2837,458 @@ LoGPUBurden is 0.000000
 UpGPUBurden is 0.000000
 LoCPUBurden is 0.000000
 UpCPUBurden is 0.000000
+cc 1.612000
+gc 1.528000
+cr 1.331000
+gr 2.104000
+cw 1.316000
+gw 2.445000
+EN
+----------------------------------
+
+----------------------------------
+
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 0.000000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.605000
+gc 1.526000
+cr 1.295000
+gr 2.819000
+cw 1.281000
+gw 3.252000
+EN
+----------------------------------
+
+----------------------------------
+
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 0.000000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.596000
+gc 1.560000
+cr 1.296000
+gr 2.860000
+cw 1.310000
+gw 3.297000
+EN
+----------------------------------
+
+----------------------------------
+
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 0.000000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.594000
+gc 1.549000
+cr 1.371000
+gr 2.855000
+cw 1.347000
+gw 3.203000
+EN
+----------------------------------
+
+----------------------------------
+
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 0.000000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.610000
+gc 1.554000
+cr 1.287000
+gr 2.822000
+cw 1.290000
+gw 3.215000
+EN
+----------------------------------
+
+----------------------------------
+
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 0.000000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.602000
+gc 1.555000
+cr 1.294000
+gr 2.861000
+cw 1.390000
+gw 3.333000
+kc 50  171.500000
+kg 50  278.000000
+EN
+sortSpeedUp0 is 0.616906
+----------------------------------
+
+sortCPUBurden0 is 171.500000
+----------------------------------
+
+sortGPUBurden0 is 278.000000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.616906
+LoGPUBurden is 278.000000
+UpGPUBurden is 0.000000
+LoCPUBurden is 171.500000
+UpCPUBurden is 0.000000
+cc 1.599000
+gc 1.545000
+cr 1.279000
+gr 2.409000
+cw 1.283000
+gw 2.804000
+kc 50  179.000000
+kg 50  136.500000
+EN
+sortSpeedUp0 is 1.311355
+----------------------------------
+
+sortCPUBurden0 is 179.000000
+----------------------------------
+
+sortGPUBurden0 is 136.500000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 1.311355
+LoGPUBurden is 136.500000
+UpGPUBurden is 0.000000
+LoCPUBurden is 179.000000
+UpCPUBurden is 0.000000
+cc 1.604000
+gc 1.547000
+cr 1.299000
+gr 2.867000
+cw 1.329000
+gw 3.248000
+kc 50  175.000000
+kg 50  131.500000
+EN
+sortSpeedUp0 is 1.330798
+----------------------------------
+
+sortCPUBurden0 is 175.000000
+----------------------------------
+
+sortGPUBurden0 is 131.500000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 1.330798
+LoGPUBurden is 131.500000
+UpGPUBurden is 0.000000
+LoCPUBurden is 175.000000
+UpCPUBurden is 0.000000
+cc 1.601000
+gc 1.562000
+cr 1.273000
+gr 2.814000
+cw 1.307000
+gw 3.185000
+kc 50  189.500000
+kg 50  136.500000
+EN
+sortSpeedUp0 is 1.388278
+----------------------------------
+
+sortCPUBurden0 is 189.500000
+----------------------------------
+
+sortGPUBurden0 is 136.500000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 1.388278
+LoGPUBurden is 136.500000
+UpGPUBurden is 0.000000
+LoCPUBurden is 189.500000
+UpCPUBurden is 0.000000
+cc 1.599000
+gc 1.540000
+cr 1.399000
+gr 2.781000
+cw 1.391000
+gw 3.184000
+kc 50  184.000000
+kg 50  137.000000
+EN
+sortSpeedUp0 is 1.343066
+----------------------------------
+
+sortCPUBurden0 is 184.000000
+----------------------------------
+
+sortGPUBurden0 is 137.000000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 1.343066
+LoGPUBurden is 137.000000
+UpGPUBurden is 0.000000
+LoCPUBurden is 184.000000
+UpCPUBurden is 0.000000
+cc 1.625000
+gc 1.568000
+cr 1.267000
+gr 2.757000
+cw 1.346000
+gw 3.175000
+kc 50  0.000000
+kg 50  277.200000
+EN
+sortSpeedUp0 is 0.000000
+----------------------------------
+
+sortCPUBurden0 is 0.000000
+----------------------------------
+
+sortGPUBurden0 is 277.200000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 277.200000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.605000
+gc 1.541000
+cr 1.277000
+gr 2.821000
+cw 1.340000
+gw 3.118000
+kc 50  0.000000
+kg 50  141.700000
+EN
+sortSpeedUp0 is 0.000000
+----------------------------------
+
+sortCPUBurden0 is 0.000000
+----------------------------------
+
+sortGPUBurden0 is 141.700000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 141.700000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.604000
+gc 1.577000
+cr 1.376000
+gr 2.818000
+cw 1.335000
+gw 3.182000
+kc 50  0.000000
+kg 50  141.100000
+EN
+sortSpeedUp0 is 0.000000
+----------------------------------
+
+sortCPUBurden0 is 0.000000
+----------------------------------
+
+sortGPUBurden0 is 141.100000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 141.100000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.602000
+gc 1.553000
+cr 1.292000
+gr 2.883000
+cw 1.283000
+gw 3.340000
+kc 50  0.000000
+kg 50  141.900000
+EN
+sortSpeedUp0 is 0.000000
+----------------------------------
+
+sortCPUBurden0 is 0.000000
+----------------------------------
+
+sortGPUBurden0 is 141.900000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 141.900000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.609000
+gc 1.537000
+cr 1.332000
+gr 2.916000
+cw 1.327000
+gw 3.328000
+kc 50  0.000000
+kg 50  141.300000
+EN
+sortSpeedUp0 is 0.000000
+----------------------------------
+
+sortCPUBurden0 is 0.000000
+----------------------------------
+
+sortGPUBurden0 is 141.300000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 141.300000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.605000
+gc 1.533000
+cr 1.282000
+gr 2.877000
+cw 1.309000
+gw 3.295000
+kc 50  0.000000
+kg 50  142.900000
+EN
+sortSpeedUp0 is 0.000000
+----------------------------------
+
+sortCPUBurden0 is 0.000000
+----------------------------------
+
+sortGPUBurden0 is 142.900000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 142.900000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.582000
+gc 1.566000
+cr 1.286000
+gr 2.871000
+cw 1.305000
+gw 3.330000
+kc 50  0.000000
+kg 50  139.700000
+EN
+sortSpeedUp0 is 0.000000
+----------------------------------
+
+sortCPUBurden0 is 0.000000
+----------------------------------
+
+sortGPUBurden0 is 139.700000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 139.700000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.599000
+gc 1.555000
+cr 1.293000
+gr 2.882000
+cw 1.315000
+gw 3.320000
+kc 50  0.000000
+kg 50  141.000000
+EN
+sortSpeedUp0 is 0.000000
+----------------------------------
+
+sortCPUBurden0 is 0.000000
+----------------------------------
+
+sortGPUBurden0 is 141.000000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 141.000000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.607000
+gc 1.535000
+cr 1.306000
+gr 2.886000
+cw 1.290000
+gw 3.347000
+kc 50  0.000000
+kg 50  140.500000
+EN
+sortSpeedUp0 is 0.000000
+----------------------------------
+
+sortCPUBurden0 is 0.000000
+----------------------------------
+
+sortGPUBurden0 is 140.500000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 140.500000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000
+cc 1.606000
+gc 1.535000
+cr 1.310000
+gr 2.896000
+cw 1.305000
+gw 3.353000
+kc 50  0.000000
+kg 50  140.700000
+EN
+sortSpeedUp0 is 0.000000
+----------------------------------
+
+sortCPUBurden0 is 0.000000
+----------------------------------
+
+sortGPUBurden0 is 140.700000
+Final decision
+
+LothresholdForGPUApp is 0.000000
+LothresholdForCPUApp is 0.000000
+LoGPUBurden is 140.700000
+UpGPUBurden is 0.000000
+LoCPUBurden is 0.000000
+UpCPUBurden is 0.000000

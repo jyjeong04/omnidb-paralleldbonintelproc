@@ -1,5 +1,5 @@
 // Linux-compatible OpenCL headers
-#define CL_TARGET_OPENCL_VERSION 120
+#define CL_TARGET_OPENCL_VERSION 200
 #include <CL/cl.h>
 #include <stdio.h>
 #include <string.h>
