@@ -125,6 +125,8 @@ extern "C" int DLL_EXPORT CL_smj( Record* h_R, int rLen, Record* h_S, int sLen, 
 
 extern "C" int DLL_EXPORT CL_hj( Record* h_R, int rLen, Record* h_S, int sLen, Record** h_Rout, int _CPU_GPU );
 
+extern "C" int DLL_EXPORT CL_hj_PE( Record* h_R, int rLen, Record* h_S, int sLen, Record** h_Rout, int _CPU_GPU, int wassize );
+
 extern "C" int DLL_EXPORT CL_inlj( Record* h_Rin, int rLen, CUDA_CSSTree** h_tree, Record* h_Sin, int sLen, Record** h_Rout, int _CPU_GPU );
 
 extern "C" int DLL_EXPORT CL_mj( void * h_Rin, int rLen, Record* h_Sin, int sLen, Record** h_Joinout, int _CPU_GPU );

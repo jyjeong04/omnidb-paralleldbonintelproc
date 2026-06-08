@@ -865,8 +865,21 @@ void EngineStart(bool handShake, int _KernelSchedule) {
   cl_init(CL_DEVICE_TYPE_CPU);
   cl_init(CL_DEVICE_TYPE_GPU);
   cl_init_common();
+  // Device fission for PE is OPT-IN: cl_init_prefetch repartitions the shared global
+  // CommandQueue[0] from the full 8-CU CPU device to a 7-CU sub-device, which every
+  // operator's CPU dispatch routes through. Only do it when PE is actually requested,
+  // so non-PE runs keep all 8 CPU cores (no silent throughput loss) and PE_MODE=0 is
+  // the true baseline.
+  // Check the VALUE, not mere presence: PE_MODE=0 must NOT fission (getenv is non-NULL
+  // for "0"). Matches how HJprobe_int reads PE_MODE.
+  bool peRequested = (getenv("PE_MODE") && atoi(getenv("PE_MODE")) != 0) || getenv("PE_SELFTEST");
+  if (peRequested) {
+    g_prefetchEnabled = 1; // cl_init_prefetch() resets to 0 if fission fails
+    cl_init_prefetch();    // device fission: 1-CU prefetch + 7-CU main sub-devices
+  }
 
   cl_prepareProgram((char *)"primitive.cl", dir);
+  if (getenv("PE_SELFTEST")) { extern void pe_selftest(); pe_selftest(); exit(0); }
   if (handShake) {
     printf("Now start handShaking!Please wait!\n");
     handShaking();

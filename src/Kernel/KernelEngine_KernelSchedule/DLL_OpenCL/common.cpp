@@ -25,6 +25,13 @@ extern double UpCPUBurden;
 cl_kernel Kernel[2]; // OpenCL kernel---------------->should been cancelled
                      // after all method update.
 static int TAG_NO;
+
+// ---- CPU-assisted prefetching via device fission (PE config) ----
+cl_device_id PrefetchSubDevice = NULL;
+cl_device_id MainCPUSubDevice = NULL;
+cl_command_queue PrefetchCommandQueue = NULL;
+int g_prefetchEnabled = 0;
+static int g_prefetchWASSize = 0;
 extern cl_ulong totalGlobalMemory[2];     /**< Max global memory allowed */
 extern cl_ulong usedtotalGlobalMemory[2]; /**< Max global memory used */
 #define APU
@@ -420,6 +427,10 @@ void cl_copyBuffer(cl_mem dest, int destOffset, cl_mem src, int srcOffset,
   clFlush(CommandQueue[CPU_GPU]);
 }
 void cl_clean(int iExitCode) {
+  // Cleanup prefetch resources first
+  if (g_prefetchEnabled) {
+    cl_cleanup_prefetch();
+  }
   // Cleanup allocated objects
   printf("Starting Cleanup...\n\n");
   int CPU_GPU;
@@ -518,4 +529,182 @@ void wait(int index, cl_event *eventList) {
   printf("index of %d Going to wait!\n", index);
   cl_int err = clWaitForEvents(1, &eventList[(index - 1) % 2]);
   printf("index of %d Finish wait! err is %d\n,", index, err);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Prefetching via Device Fission
+// Per paper: "We fix prefetching on one CPU CU" — use clCreateSubDevices
+// to partition the CPU device into a 1-CU prefetch helper and the remaining
+// CUs for main query processing.
+///////////////////////////////////////////////////////////////////////////////
+void cl_init_prefetch() {
+  cl_int err;
+
+  // 1. Query the number of compute units on the CPU device
+  cl_uint maxCUs = 0;
+  err = clGetDeviceInfo(Device[0], CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(cl_uint),
+                        &maxCUs, NULL);
+  if (err != CL_SUCCESS) {
+    printf("[Prefetch] Error %d querying CL_DEVICE_MAX_COMPUTE_UNITS\n", err);
+    cl_clean(err);
+  }
+  printf("[Prefetch] CPU Device has %u compute units\n", maxCUs);
+
+  if (maxCUs < 2) {
+    printf("[Prefetch] WARNING: CPU has only %u CU(s), cannot split for "
+           "prefetching. Prefetching disabled.\n",
+           maxCUs);
+    g_prefetchEnabled = 0;
+    cl_clean(CL_SUCCESS);
+  }
+
+  // 2. Check if device supports partitioning
+  cl_uint maxSubDevices = 0;
+  err = clGetDeviceInfo(Device[0], CL_DEVICE_PARTITION_MAX_SUB_DEVICES,
+                        sizeof(cl_uint), &maxSubDevices, NULL);
+  if (err != CL_SUCCESS || maxSubDevices < 2) {
+    printf("[Prefetch] WARNING: Device does not support partition "
+           "(maxSubDevices=%u, err=%d). Prefetching disabled.\n",
+           maxSubDevices, err);
+    g_prefetchEnabled = 0;
+    cl_clean(CL_SUCCESS);
+  }
+  printf("[Prefetch] Device supports up to %u sub-devices\n", maxSubDevices);
+
+  // 3. Partition the CPU device: 1 CU for prefetch, (maxCUs-1) for main work
+  //    Using CL_DEVICE_PARTITION_BY_COUNTS to specify exact CU counts.
+  cl_uint prefetchCUs = 1;
+  cl_uint mainCUs = maxCUs - 1;
+
+  cl_device_partition_property partitionProps[] = {
+      CL_DEVICE_PARTITION_BY_COUNTS, (cl_device_partition_property)prefetchCUs,
+      (cl_device_partition_property)mainCUs,
+      CL_DEVICE_PARTITION_BY_COUNTS_LIST_END, 0};
+
+  cl_device_id subDevices[2];
+  cl_uint numSubDevicesRet = 0;
+  err = clCreateSubDevices(Device[0], partitionProps, 2, subDevices,
+                           &numSubDevicesRet);
+  if (err != CL_SUCCESS) {
+    printf("[Prefetch] Error %d in clCreateSubDevices. "
+           "Prefetching disabled.\n",
+           err);
+    g_prefetchEnabled = 0;
+    cl_clean(err);
+  }
+  printf("[Prefetch] Created %u sub-devices (prefetch: 1 CU, main: %u CUs)\n",
+         numSubDevicesRet, mainCUs);
+
+  PrefetchSubDevice = subDevices[0]; // 1 CU — dedicated prefetch helper
+  MainCPUSubDevice = subDevices[1];  // (maxCUs-1) CUs — main CPU work
+
+  // 4. Create a command queue on the prefetch sub-device
+  //    Reuse the existing shared Context (it was created with the parent
+  //    device)
+  PrefetchCommandQueue =
+      clCreateCommandQueue(Context, PrefetchSubDevice, 0, &err);
+  if (err != CL_SUCCESS) {
+    printf("[Prefetch] Error %d creating PrefetchCommandQueue\n", err);
+    g_prefetchEnabled = 0;
+    clReleaseDevice(PrefetchSubDevice);
+    clReleaseDevice(MainCPUSubDevice);
+    PrefetchSubDevice = NULL;
+    MainCPUSubDevice = NULL;
+    cl_clean(err);
+  }
+
+  // 5. Optionally re-create the main CPU command queue using the main
+  // sub-device
+  //    so that main CPU work only uses (maxCUs-1) CUs and does not interfere
+  //    with the prefetch CU.
+  if (CommandQueue[0]) {
+    clReleaseCommandQueue(CommandQueue[0]);
+  }
+  CommandQueue[0] = clCreateCommandQueue(Context, MainCPUSubDevice, 0, &err);
+  if (err != CL_SUCCESS) {
+    printf("[Prefetch] Error %d re-creating main CPU CommandQueue. "
+           "Falling back to parent device.\n",
+           err);
+    // Fallback: re-create using original CPU device
+    CommandQueue[0] = clCreateCommandQueue(Context, Device[0], 0, &err);
+  }
+
+  // (The full 8-CU CPU device is reached simply by NOT fissioning — non-PE runs skip
+  //  cl_init_prefetch entirely and keep CommandQueue[0] on the parent device, so no
+  //  separate "full CPU" queue is needed here.)
+
+  // 6. Set default WAS size if not already configured
+  if (g_prefetchWASSize <= 0) {
+    cl_ulong cacheSize = 0;
+    clGetDeviceInfo(Device[0], CL_DEVICE_GLOBAL_MEM_CACHE_SIZE,
+                    sizeof(cl_ulong), &cacheSize, NULL);
+
+    if (cacheSize > 0) {
+      // === Zhou et al. VLDB 2005 §4.2 ===
+      //
+      //   "the expected amount of preloaded data for the entire work-ahead
+      //    set should be smaller than the L2 cache size. Since the main
+      //    thread may have older cache-resident data that is still being
+      //    used, and in order to avoid conflict misses, the threshold
+      //    should be lower, such as one quarter of the cache size."
+      //
+      // Paper assumes Pentium 4 SMT (helper+main share L2). Our setup uses
+      // device fission (helper on 1 core, main on 7 cores), so the *shared*
+      // cache is L3 — apply the L3/4 rule there.
+      //
+      // Per entry cache occupancy:
+      //   - WAS struct itself              : 32 B (lives in WAS buffer)
+      //   - 2 pointers × 64 B cache line   : 128 B (preloaded data)
+      //   ────────────────────────────────────────────────
+      //   total                            : 160 B
+      //
+      // Constraint:  N × 160 B ≤ cache / 4
+      const size_t entrySize = 32;
+      const int pointersPerEntry = 2; // p1 + p2 in WASEntry
+      const size_t cacheLineSize = 64;
+      const size_t preloadPerEntry = pointersPerEntry * cacheLineSize; // 128
+      const size_t costPerEntry = entrySize + preloadPerEntry;         // 160
+
+      int raw = (int)(cacheSize / (4 * costPerEntry));
+      // Power of 2 round-down (allows bitmask wrap in WAS_kernel idx step)
+      int pot = 1;
+      while (pot * 2 <= raw)
+        pot *= 2;
+      g_prefetchWASSize = pot;
+
+      // Paper-compliance accounting
+      double l3_total_pct =
+          100.0 * (double)pot * costPerEntry / (double)cacheSize;
+      double l3_preload_pct =
+          100.0 * (double)pot * preloadPerEntry / (double)cacheSize;
+      printf("[Prefetch] L3 = %.1f MB, cost/entry = %zu B "
+             "(struct %zu + preload %zu)\n",
+             cacheSize / (1024.0 * 1024.0), costPerEntry, entrySize,
+             preloadPerEntry);
+      printf("[Prefetch] WAS=%d → preload=%.2f%% L3, total=%.2f%% L3 "
+             "(paper §4.2 L3/4 = 25%% threshold)\n",
+             pot, l3_preload_pct, l3_total_pct);
+    }
+  }
+
+  printf("[Prefetch] Work-Ahead Set size = %d elements (power of 2)\n",
+         g_prefetchWASSize);
+  printf("[Prefetch] Device fission prefetching initialized successfully.\n");
+}
+
+void cl_cleanup_prefetch() {
+  if (PrefetchCommandQueue) {
+    clFinish(PrefetchCommandQueue);
+    clReleaseCommandQueue(PrefetchCommandQueue);
+    PrefetchCommandQueue = NULL;
+  }
+  if (PrefetchSubDevice) {
+    clReleaseDevice(PrefetchSubDevice);
+    PrefetchSubDevice = NULL;
+  }
+  if (MainCPUSubDevice) {
+    clReleaseDevice(MainCPUSubDevice);
+    MainCPUSubDevice = NULL;
+  }
+  printf("[Prefetch] Cleanup complete.\n");
 }

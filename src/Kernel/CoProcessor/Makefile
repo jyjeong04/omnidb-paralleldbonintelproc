@@ -78,6 +78,8 @@ kernel-engine: $(KERNEL_ENGINE_DIR)/libomnidb_opencl.a
 $(KERNEL_ENGINE_DIR)/libomnidb_opencl_nomain.a:
 	$(MAKE) -C $(KERNEL_ENGINE_DIR) static
 	cp $(KERNEL_ENGINE_DIR)/libomnidb_opencl.a $(KERNEL_ENGINE_DIR)/libomnidb_opencl_nomain.a
+	objcopy --localize-symbol=main $(KERNEL_ENGINE_DIR)/build/mainProgram.o $(KERNEL_ENGINE_DIR)/build/mainProgram_nomain.o
+	ar r $(KERNEL_ENGINE_DIR)/libomnidb_opencl_nomain.a $(KERNEL_ENGINE_DIR)/build/mainProgram_nomain.o
 	ar d $(KERNEL_ENGINE_DIR)/libomnidb_opencl_nomain.a mainProgram.o
 
 # Build everything from scratch

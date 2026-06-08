@@ -1,5 +1,5 @@
 // Linux-compatible OpenCL headers
-#define CL_TARGET_OPENCL_VERSION 120
+#define CL_TARGET_OPENCL_VERSION 200
 #include <CL/cl.h>
 #include <stdio.h>
 #include <string.h>
@@ -68,6 +68,14 @@ void cl_init(cl_device_type TYPE);
 void cl_init_common ();
 void cl_clean (int iExitCode);
 void cl_prepareProgram(char* cSourceFile, char* dir);
+
+// ---- CPU-assisted prefetching via device fission (PE config) ----
+extern cl_device_id PrefetchSubDevice;        // 1-CU sub-device (P helper)
+extern cl_device_id MainCPUSubDevice;         // 7-CU sub-device (CPU-E)
+extern cl_command_queue PrefetchCommandQueue; // queue on PrefetchSubDevice
+extern int g_prefetchEnabled;                 // 1 = fission active
+void cl_init_prefetch();
+void cl_cleanup_prefetch();
 void cl_getKernel(char* kernelName,cl_kernel *kernel);
 void cl_getKernel(char* kernelName,int CPU_GPU);
 void cl_launchKernel(cl_uint work_dim, const size_t *groups, size_t *threads,cl_kernel *Kernel,int CPU_GPU);
