@@ -30,6 +30,7 @@ static int TAG_NO;
 cl_device_id PrefetchSubDevice = NULL;
 cl_device_id MainCPUSubDevice = NULL;
 cl_command_queue PrefetchCommandQueue = NULL;
+cl_command_queue FullCPUCommandQueue = NULL; // 8-CU queue on parent Device[0] (no-helper phases)
 int g_prefetchEnabled = 0;
 static int g_prefetchWASSize = 0;
 extern cl_ulong totalGlobalMemory[2];     /**< Max global memory allowed */
@@ -629,9 +630,19 @@ void cl_init_prefetch() {
     CommandQueue[0] = clCreateCommandQueue(Context, Device[0], 0, &err);
   }
 
-  // (The full 8-CU CPU device is reached simply by NOT fissioning — non-PE runs skip
-  //  cl_init_prefetch entirely and keep CommandQueue[0] on the parent device, so no
-  //  separate "full CPU" queue is needed here.)
+  // 5b. Full 8-CU queue on the parent Device[0]. Used for CPU kernels that have NO
+  //     concurrent prefetch helper (build, projection, noWAS probe): those can use all
+  //     8 cores, since the prefetch core is only busy during the WAS probe. The WAS probe
+  //     stays on the 7-CU CommandQueue[0] (helper on the 1-CU PrefetchSubDevice).
+  FullCPUCommandQueue = clCreateCommandQueue(Context, Device[0], 0, &err);
+  if (err != CL_SUCCESS) {
+    printf("[Prefetch] Warning: Error %d creating FullCPUCommandQueue; "
+           "no-helper CPU kernels will use the 7-CU queue.\n", err);
+    FullCPUCommandQueue = NULL;
+  } else {
+    printf("[Prefetch] Created FullCPUCommandQueue on parent Device[0] (8 CUs) "
+           "for no-helper CPU kernels\n");
+  }
 
   // 6. Set default WAS size if not already configured
   if (g_prefetchWASSize <= 0) {
@@ -693,6 +704,11 @@ void cl_init_prefetch() {
 }
 
 void cl_cleanup_prefetch() {
+  if (FullCPUCommandQueue) {
+    clFinish(FullCPUCommandQueue);
+    clReleaseCommandQueue(FullCPUCommandQueue);
+    FullCPUCommandQueue = NULL;
+  }
   if (PrefetchCommandQueue) {
     clFinish(PrefetchCommandQueue);
     clReleaseCommandQueue(PrefetchCommandQueue);

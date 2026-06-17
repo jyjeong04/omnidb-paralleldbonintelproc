@@ -860,6 +860,11 @@ void readFromFile() {
 }
 void EngineStart(bool handShake, int _KernelSchedule) {
   global_KernelSchedule = _KernelSchedule;
+  // CPU_ONLY: paper's E-CPU baseline — pin every kernel/buffer op to the CPU device
+  // (no GPU, no fission, no prefetch). Forces Kernelscheduler/*bufferscheduler to CPU.
+  extern int g_forceCpuOnly;
+  g_forceCpuOnly = (getenv("CPU_ONLY") && atoi(getenv("CPU_ONLY"))) ? 1 : 0;
+  if (g_forceCpuOnly) fprintf(stderr, "[E-CPU] CPU_ONLY active: all kernels/buffers pinned to CPU (no GPU, no prefetch)\n");
   // pthread_mutex_t already initialized with PTHREAD_MUTEX_INITIALIZER
   // No need for explicit initialization
   cl_init(CL_DEVICE_TYPE_CPU);

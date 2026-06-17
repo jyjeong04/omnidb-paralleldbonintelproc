@@ -121,17 +121,18 @@ static void HJprobe_enqueue_PE(cl_kernel *Kernel, int probeWorkSize, int wassize
 		clSetKernelArg(*Kernel, 9, sizeof(cl_mem), &nb);
 	}
 
-	// Enqueue + event-chain/burden bookkeeping mirrors kernel_enqueue
-	// (KernelScheduler.cpp:108-134) — the source of truth. Keep in sync if that changes.
+	// Geometry (num_wg) is controlled by NUM_WG in HJImpl; the probe runs on the fission
+	// device CommandQueue[CPU_GPU] at that geometry (no per-path rounding/queue swap).
 	size_t groups = globalSize, threads = groupSize;
+	cl_command_queue probeQ = CommandQueue[CPU_GPU];
 	if (CPU_GPU && threads > 256) threads = 256;
 	cl_int ciErr1;
 	if (*index != 0) {
-		ciErr1 = clEnqueueNDRangeKernel(CommandQueue[CPU_GPU], *Kernel, 1, NULL, &groups, &threads,
+		ciErr1 = clEnqueueNDRangeKernel(probeQ, *Kernel, 1, NULL, &groups, &threads,
 			1, &eventList[(*index - 1) % 2], &eventList[*index % 2]);
 		deschedule(preFlag, preBurden);
 	} else {
-		ciErr1 = clEnqueueNDRangeKernel(CommandQueue[CPU_GPU], *Kernel, 1, NULL, &groups, &threads,
+		ciErr1 = clEnqueueNDRangeKernel(probeQ, *Kernel, 1, NULL, &groups, &threads,
 			0, NULL, &eventList[*index]);
 	}
 	(*index)++;
@@ -139,7 +140,7 @@ static void HJprobe_enqueue_PE(cl_kernel *Kernel, int probeWorkSize, int wassize
 		printf("Error %d in clEnqueueNDRangeKernel (PE probe), Line %u in file %s !!!\n\n", ciErr1, __LINE__, __FILE__);
 		cl_clean(EXIT_FAILURE);
 	}
-	clFlush(CommandQueue[CPU_GPU]);
+	clFlush(probeQ);
 
 	if (useWAS) {
 		clFinish(CommandQueue[0]);          // probe complete
@@ -208,7 +209,13 @@ int HJImpl(cl_mem d_R, cl_uint rLen, cl_mem d_S, cl_uint sLen, cl_mem rHashTable
 {
 	cl_uint  resultsNum = rLen;
 	cl_uint  rHashTableBucketNum = 2 * 1024 * 1024;
-	size_t groupSize = 256, globalSize = 8192;
+	// Geometry control: NUM_WG overrides the work-group count (default 32 = 8192/256).
+	// Used to study the power-of-2-globalSize cache-conflict effect and to match geometry
+	// across configs. Applies to BOTH build (kid 49) and probe (kid 50).
+	size_t groupSize = 256;
+	static int hjNumWG = -1;
+	if (hjNumWG < 0) hjNumWG = getenv("NUM_WG") ? atoi(getenv("NUM_WG")) : 32;
+	size_t globalSize = (size_t)hjNumWG * groupSize;
 	CL_MALLOC(d_Rout,sizeof(Record) * resultsNum * 2);
 
 HJbuild_int(d_R, rHashTable, rLen , sLen, rHashTableBucketNum,

@@ -73,6 +73,7 @@ void cl_prepareProgram(char* cSourceFile, char* dir);
 extern cl_device_id PrefetchSubDevice;        // 1-CU sub-device (P helper)
 extern cl_device_id MainCPUSubDevice;         // 7-CU sub-device (CPU-E)
 extern cl_command_queue PrefetchCommandQueue; // queue on PrefetchSubDevice
+extern cl_command_queue FullCPUCommandQueue;  // 8-CU queue on parent Device[0] (no-helper phases)
 extern int g_prefetchEnabled;                 // 1 = fission active
 void cl_init_prefetch();
 void cl_cleanup_prefetch();

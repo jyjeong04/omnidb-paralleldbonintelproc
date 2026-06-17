@@ -804,6 +804,13 @@ void filterImpl_map_kernel_handshake(int _HandShakeCPU_GPU,
                              (void *)&largeKey);
     ciErr1 |=
         clSetKernelArg((*_HandShakeKernel), 6, sizeof(cl_mem), (void *)&D3);
+    // filterImpl_map_kernel gained 3 WAS args (7,8,9); handshake is noWAS (wassize=-1).
+    {
+      cl_mem wasNull = NULL; int wasOff = -1;
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 7, sizeof(cl_mem), (void *)&wasNull);
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 8, sizeof(cl_int), (void *)&wasOff);
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 9, sizeof(cl_mem), (void *)&wasNull);
+    }
     cl_launchKernel(1, &globalWorkingSetSize, &numThreadsPerBlock_x,
                     _HandShakeKernel, _HandShakeCPU_GPU);
     double t = DLL_getTimer(timer);
@@ -858,6 +865,13 @@ void filterImpl_write_kernel_handshake(int _HandShakeCPU_GPU,
                              (void *)&beginPos);
     ciErr1 |=
         clSetKernelArg((*_HandShakeKernel), 5, sizeof(cl_int), (void *)&rLen);
+    // filterImpl_write_kernel gained 3 WAS args (6,7,8); handshake is noWAS (wassize=-1).
+    {
+      cl_mem wasNull = NULL; int wasOff = -1;
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 6, sizeof(cl_mem), (void *)&wasNull);
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 7, sizeof(cl_int), (void *)&wasOff);
+      ciErr1 |= clSetKernelArg((*_HandShakeKernel), 8, sizeof(cl_mem), (void *)&wasNull);
+    }
     cl_launchKernel(1, &globalWorkingSetSize, &numThreadsPerBlock_x,
                     _HandShakeKernel, _HandShakeCPU_GPU);
     double t = DLL_getTimer(timer);

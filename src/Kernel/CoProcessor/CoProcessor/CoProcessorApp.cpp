@@ -48,8 +48,9 @@ int main(int argc, char **argv) {
   int choice;
   QUERY_TYPE qt;
   initDB2("RS.conf", TEST_MAX);
-  QUERY_TYPE qT1 = Q_HJ;
-  QUERY_TYPE qT2 = Q_HJ;
+  QUERY_TYPE qT1 = Q_RANGE_SELECTION;
+  QUERY_TYPE qT2 = Q_RANGE_SELECTION;
+  if (getenv("QTYPE_HJ")) { qT1 = Q_HJ; qT2 = Q_HJ; }  // PE verification: force hash-join queries (exercise CO_hj/CL_hj_PE)
   testQueryProcessor(qT1, qT2, numQueries, numThread);
   EngineStop();
   return 0;

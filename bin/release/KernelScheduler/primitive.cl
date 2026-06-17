@@ -882,30 +882,80 @@ void ScanLargeArrays_kernel(__global int *output,
 	
 
 }
+// WAS(Work-Ahead Set) 구조체 + post() — filter(kid=20)와 probe(kid=50)가 공유.
+// filter 커널이 probe보다 앞에 있으므로 여기서 한 번만 정의한다.
+typedef struct {
+  __global uint *p1;
+  __global uint *p2;
+  long state1;
+  long state2;
+} WASEntry;
+
+inline WASEntry post(__global WASEntry *was, __global uint *p1,
+                     __global uint *p2, long state1, long state2, int idx) {
+  volatile WASEntry old = was[idx];
+  was[idx].p1 = p1;
+  was[idx].p2 = p2;
+  was[idx].state1 = state1;
+  was[idx].state2 = state2;
+  return old;
+}
+
 __kernel void//kid=20
-filterImpl_map_kernel(__global Record* d_Rin, int beginPos, int rLen, __global int* d_mark, 
-								  int smallKey, int largeKey, __global int* d_temp )
+filterImpl_map_kernel(__global Record* d_Rin, int beginPos, int rLen, __global int* d_mark,
+								  int smallKey, int largeKey, __global int* d_temp,
+								  __global WASEntry *was_buffer, int wassize, __global uint *dummy_buffer )
 {
 	int iGID = get_global_id(0);
-	Record value;
+	int wgid = get_group_id(0);
+	int num_wg = get_num_groups(0);
 	int delta=get_global_size(0);
-	int flag=0;
+	__global uint *dummy_addr = dummy_buffer;
+
+	// noWAS (wassize<=0): 기존 동작과 동일
+	if (wassize <= 0) {
+		for(int pos=iGID;pos<rLen;pos+=delta)
+		{
+			Record value = d_Rin[pos];
+			d_temp[pos] = value.x;
+			int key = value.y;
+			d_mark[pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
+		}
+		return;
+	}
+
+	// WAS: WG 단위 partition (같은 WG는 같은 CU에서 순차 실행 → race 없음, PoCL CPU 가정).
+	// main이 다음에 처리할 입력 레코드 주소(&d_Rin[pos])를 post하면 1-CU helper가 prefetch.
+	int was_per_wg = wassize / num_wg;
+	int was_base = wgid * was_per_wg;
+	int was_step = 0;
 	for(int pos=iGID;pos<rLen;pos+=delta)
 	{
-		value = d_Rin[pos];
-		d_temp[pos] = value.x;
-		int key = value.y;
-		//the filter condition		
-		if( ( key >= smallKey ) && ( key <= largeKey ) )
-		{
-			flag = 1;
+		WASEntry old = post(was_buffer, (__global uint *)&d_Rin[pos], dummy_addr,
+							pos, -1, was_base + was_step);
+		was_step++;
+		if (was_step >= was_per_wg) was_step = 0;
+		int old_pos = (int)old.state1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			Record value = d_Rin[old_pos];
+			d_temp[old_pos] = value.x;
+			int key = value.y;
+			d_mark[old_pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
 		}
-		else
-		{
-			flag=0;
+	}
+	// flush — 지연된 tail 튜플 처리 (정확성 필수): WG의 슬롯 전체를 비우며 처리
+	for (int i = 0; i < was_per_wg; i++) {
+		int slot = was_base + i;
+		int old_pos = (int)was_buffer[slot].state1;
+		was_buffer[slot].p1 = dummy_addr;
+		was_buffer[slot].state1 = -1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			Record value = d_Rin[old_pos];
+			d_temp[old_pos] = value.x;
+			int key = value.y;
+			d_mark[old_pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
 		}
-		d_mark[pos]=flag;
-	}	
+	}
 }
 
 /*__kernel void //kid=21
@@ -969,22 +1019,55 @@ filterImpl_write_noCoalesced_kernel(__global Record* d_Rout,__global Record* d_R
 }
 
 __kernel void//kid=23
-filterImpl_write_kernel(__global Record* d_Rout,__global Record* d_Rin, __global int* d_mark, __global int* d_markOutput, int beginPos, int rLen )
+filterImpl_write_kernel(__global Record* d_Rout,__global Record* d_Rin, __global int* d_mark, __global int* d_markOutput, int beginPos, int rLen,
+						__global WASEntry *was_buffer, int wassize, __global uint *dummy_buffer )
 {
 	int iGID = get_global_id(0);
-	Record value;
+	int wgid = get_group_id(0);
+	int num_wg = get_num_groups(0);
 	int delta=get_global_size(0);
-	int flag=0;
-	int writePos=0;
+	__global uint *dummy_addr = dummy_buffer;
+
+	// noWAS (wassize<=0): 기존 동작과 동일
+	if (wassize <= 0) {
+		for(int pos=iGID;pos<rLen;pos+=delta)
+		{
+			int flag=d_mark[pos];
+			int writePos=d_markOutput[pos];
+			if(flag) d_Rout[writePos]=d_Rin[pos];
+		}
+		return;
+	}
+
+	// WAS: main이 다음에 scatter할 입력 레코드 주소(&d_Rin[pos])를 post → 1-CU helper가 prefetch.
+	int was_per_wg = wassize / num_wg;
+	int was_base = wgid * was_per_wg;
+	int was_step = 0;
 	for(int pos=iGID;pos<rLen;pos+=delta)
 	{
-		flag=d_mark[pos];
-		writePos=d_markOutput[pos];
-		if(flag)
-		{
-			d_Rout[writePos]=d_Rin[pos];
+		WASEntry old = post(was_buffer, (__global uint *)&d_Rin[pos], dummy_addr,
+							pos, -1, was_base + was_step);
+		was_step++;
+		if (was_step >= was_per_wg) was_step = 0;
+		int old_pos = (int)old.state1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			int flag=d_mark[old_pos];
+			int writePos=d_markOutput[old_pos];
+			if(flag) d_Rout[writePos]=d_Rin[old_pos];
 		}
-	}	
+	}
+	// flush — 지연된 tail 처리 (정확성 필수)
+	for (int i = 0; i < was_per_wg; i++) {
+		int slot = was_base + i;
+		int old_pos = (int)was_buffer[slot].state1;
+		was_buffer[slot].p1 = dummy_addr;
+		was_buffer[slot].state1 = -1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			int flag=d_mark[old_pos];
+			int writePos=d_markOutput[old_pos];
+			if(flag) d_Rout[writePos]=d_Rin[old_pos];
+		}
+	}
 }
 
 
@@ -2567,6 +2650,9 @@ uint sim_hash(uint key, uint mod)
 	return key % mod;
 }
 
+// (WASEntry / post() 정의는 filterImpl_map_kernel(kid=20) 앞으로 이동 — filter와
+//  probe가 공유하며, filter가 더 앞에 있어 거기서 한 번만 정의한다.)
+
 __kernel //kid 58
 void build_kernel(__global uint * rTableOnDevice,
 	       __global uint * rHashTable,
@@ -2598,44 +2684,190 @@ void build_kernel(__global uint * rTableOnDevice,
 }
 
 __kernel //kid 59
-void probe_kernel(__global uint * rHashTable, 
-           __global uint * sTableOnDevice, 
-		   __global uint * matchedTable,
-		   const uint      rTupleNum, 
-		   const uint      sTupleNum, 
-		   const uint      rHashTableBucketNum, 
-		   const uint      matchedTupleNum)
-{
-	uint numWorkItems = get_global_size(0);
-    uint tid          = get_global_id(0);
+    void probe_kernel(__global uint *rHashTable, __global uint *sTableOnDevice,
+                      __global uint *matchedTable, const uint rTupleNum,
+                      const uint sTupleNum, const uint rHashTableBucketNum,
+                      const uint matchedTupleNum, __global WASEntry *was_buffer,
+                      int wassize, __global uint *dummy_buffer) {
+  uint numWorkItems = get_global_size(0);
+  uint tid = get_global_id(0);
+  int wgid = get_group_id(0);
+  int num_wg = get_num_groups(0);
+  __global uint *dummy_addr = dummy_buffer;
+  uint key, val, hash, count, matchedNum;
+  uint hashBucketSize = rTupleNum / rHashTableBucketNum;
+  if (wassize <= 0) {
 
-	uint key, val, hash, count, matchedNum;
-	uint hashBucketSize = rTupleNum/rHashTableBucketNum;
+    while (tid < sTupleNum) {
+      // get one tuple from S table
+      key = sTableOnDevice[tid * 2 + 0];
+      val = sTableOnDevice[tid * 2 + 1];
 
-	while(tid < sTupleNum)
-	{
-		//get one tuple from S table
-		key = sTableOnDevice[tid * 2 + 0];
-		val = sTableOnDevice[tid * 2 + 1];
-		
-		//since hash value calculation consumes only tens ms, so GPU will finish it first
-		hash = djb2_hash(key,rHashTableBucketNum);
+      // since hash value calculation consumes only tens ms, so GPU will finish
+      // it first
+      hash = djb2_hash(key, rHashTableBucketNum);
 
-		//find out matched tuples in hash table for R table
-		count = 0;
-		while(count < hashBucketSize)
-		{
-			if(rHashTable[1 + hash * (1 + hashBucketSize * 2) + count * 2] == key) //compare the key
-			{
-				matchedNum = atomic_inc(&matchedTable[0]);
-				matchedTable[4 + matchedNum * 4 + 0] = key;
-				matchedTable[4 + matchedNum * 4 + 1] = val;
-				matchedTable[4 + matchedNum * 4 + 2] = key;
-				matchedTable[4 + matchedNum * 4 + 3] = rHashTable[1 + hash * (1 + hashBucketSize * 2) + count * 2 + 1];
-			}
-			count++;
-		}
-		
-		tid += numWorkItems;
-	}
+      // find out matched tuples in hash table for R table
+      count = 0;
+      while (count < hashBucketSize) {
+        if (rHashTable[1 + hash * (1 + hashBucketSize * 2) + count * 2] ==
+            key) // compare the key
+        {
+          matchedNum = atomic_inc(&matchedTable[0]);
+          matchedTable[4 + matchedNum * 4 + 0] = key;
+          matchedTable[4 + matchedNum * 4 + 1] = val;
+          matchedTable[4 + matchedNum * 4 + 2] = key;
+          matchedTable[4 + matchedNum * 4 + 3] =
+              rHashTable[1 + hash * (1 + hashBucketSize * 2) + count * 2 + 1];
+        }
+        count++;
+      }
+
+      tid += numWorkItems;
+    }
+    return;
+  }
+  int was_per_wg = wassize / num_wg;
+  int was_base = wgid * was_per_wg;
+  int was_step = 0;
+
+  while (tid < sTupleNum) {
+    key = sTableOnDevice[tid * 2 + 0];
+    val = sTableOnDevice[tid * 2 + 1];
+    hash = djb2_hash(key, rHashTableBucketNum);
+    WASEntry old =
+        post(was_buffer, &rHashTable[1 + hash * (1 + hashBucketSize * 2)],
+             dummy_addr, (long)key, (long)val, was_base + was_step);
+    was_step = (was_step >= was_per_wg - 1) ? 0 : was_step + 1;
+    if (old.p1 != dummy_addr) {
+      count = 0;
+      while (count < hashBucketSize) {
+        __global uint *bk = old.p1 + count * 2; // entry `count`: key@[0], val@[1]
+        if (*bk == (uint)old.state1) {
+          matchedNum = atomic_inc(&matchedTable[0]);
+          matchedTable[4 + matchedNum * 4 + 0] = (uint)old.state1; // S key
+          matchedTable[4 + matchedNum * 4 + 1] = (uint)old.state2; // S val
+          matchedTable[4 + matchedNum * 4 + 2] = (uint)old.state1;
+          matchedTable[4 + matchedNum * 4 + 3] = *(bk + 1); // R val
+        }
+        count++;
+      }
+    }
+    tid += numWorkItems;
+  }
+  // drain the remaining in-flight WAS entries once, at the very end.
+  for (int i = 0; i < was_per_wg; i++) {
+    int slot = was_base + i;
+    __global uint *bhead = was_buffer[slot].p1;
+    if (bhead != dummy_addr) {
+      long skey = was_buffer[slot].state1;
+      long sval = was_buffer[slot].state2;
+      for (uint c2 = 0; c2 < hashBucketSize; c2++) {
+        __global uint *bk = bhead + c2 * 2; // scan whole bucket, like main loop
+        if (*bk == (uint)skey) {
+          matchedNum = atomic_inc(&matchedTable[0]);
+          matchedTable[4 + matchedNum * 4 + 0] = (uint)skey;
+          matchedTable[4 + matchedNum * 4 + 1] = (uint)sval;
+          matchedTable[4 + matchedNum * 4 + 2] = (uint)skey;
+          matchedTable[4 + matchedNum * 4 + 3] = *(bk + 1);
+        }
+      }
+    }
+    was_buffer[slot].p1 = dummy_addr;
+  }
 }
+#if defined(__x86_64__) || defined(__i386__)
+#define CPU_PAUSE() __asm__ __volatile__("pause" ::: "memory")
+#elif defined(__aarch64__)
+#define CPU_PAUSE() __asm__ __volatile__("yield" ::: "memory")
+#else
+#define CPU_PAUSE() ((void)0)
+#endif
+
+// kid = 51 — paper-faithful WAS helper (Zhou et al. VLDB 2005 §4.1, §4.3,
+// §4.4):
+//  - first-pointer comparison for change detection (§4.4)
+//  - unconditional p1+p2 preload, no branch on state (§4.1)
+//  - backward processing (§4.3) — sequential idx-- with wassize wraparound
+//  - dummy slots never spin, just advance (§4.4)
+//>>>WASK_BEGIN
+__kernel void WAS_kernel(volatile __global WASEntry *was_buffer,
+                         const int wassize, volatile __global uint *ctrl,
+                         __global ulong *last_tag, const int wasMode) {
+  // wasMode bits: 0=backward dir, 1=spin on unchanged, 2=CPU_PAUSE in spin
+  const int dirBack = wasMode & 1;
+  const int doSpin = wasMode & 2;
+  const int doPause = wasMode & 4;
+  volatile uint temp = 0;
+  uint count = 0;
+  int idx = dirBack ? (wassize - 1) : 0;
+  const ulong dummyVal = (ulong)(uintptr_t)ctrl;
+
+  if (wasMode & 8) { // bit3: 64B-wide — examine 2 entries (one cache line) per
+    // iteration; issue both buckets' prefetch loads together => 2 in-flight DRAM
+    // misses (better MLP on the single helper core). Forward, nospin.
+    int i = 0;
+    while (ctrl[1] == 0) {
+      int j = (i + 1 < wassize) ? (i + 1) : i;
+      __global uint *p1a = was_buffer[i].p1;
+      __global uint *p1b = was_buffer[j].p1;
+      ulong ta = (ulong)(uintptr_t)p1a;
+      ulong tb = (ulong)(uintptr_t)p1b;
+      int doa = (ta != dummyVal && ta != last_tag[i]);
+      int dob = (j != i && tb != dummyVal && tb != last_tag[j]);
+      if (doa) temp += *p1a; // both loads issued before use -> overlap (MLP=2)
+      if (dob) temp += *p1b;
+      if (doa) { temp += *was_buffer[i].p2; last_tag[i] = ta; count++; }
+      if (dob) { temp += *was_buffer[j].p2; last_tag[j] = tb; count++; }
+      i += 2;
+      if (i >= wassize) i = 0;
+    }
+    ctrl[0] += count;
+    return;
+  }
+
+  while (ctrl[1] == 0) {
+    ulong cur = (ulong)(uintptr_t)was_buffer[idx].p1;
+
+    if (cur == dummyVal) { // empty slot — never spin, just advance (paper §4.4)
+      idx = dirBack ? (idx == 0 ? wassize - 1 : idx - 1)
+                    : (idx == wassize - 1 ? 0 : idx + 1);
+      continue;
+    }
+
+    if (cur == last_tag[idx]) { // unchanged since last visit
+      if (doSpin) {
+        do {
+          if (ctrl[1] != 0) {
+            ctrl[0] += count;
+            return;
+          }
+          if (doPause) CPU_PAUSE();
+          cur = (ulong)(uintptr_t)was_buffer[idx].p1;
+        } while (cur == last_tag[idx]);
+        if (cur == dummyVal) {
+          idx = dirBack ? (idx == 0 ? wassize - 1 : idx - 1)
+                        : (idx == wassize - 1 ? 0 : idx + 1);
+          continue;
+        }
+      } else { // nospin: don't re-prefetch the same slot, just advance
+        idx = dirBack ? (idx == 0 ? wassize - 1 : idx - 1)
+                      : (idx == wassize - 1 ? 0 : idx + 1);
+        continue;
+      }
+    }
+
+    __global uint *q1 = was_buffer[idx].p1; // buffer reads kept (coherence)
+    __global uint *q2 = was_buffer[idx].p2;
+    if (!(wasMode & 16)) { // bit4: skip bucket deref (ablation: buffer-read only)
+      temp += *q1;
+      temp += *q2;
+    }
+    last_tag[idx] = cur;
+    count++;
+    idx = dirBack ? (idx == 0 ? wassize - 1 : idx - 1)
+                  : (idx == wassize - 1 ? 0 : idx + 1);
+  }
+  ctrl[0] += count;
+}
+//<<<WASK_END

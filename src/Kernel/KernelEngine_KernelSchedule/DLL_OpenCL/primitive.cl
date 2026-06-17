@@ -882,30 +882,80 @@ void ScanLargeArrays_kernel(__global int *output,
 	
 
 }
+// WAS(Work-Ahead Set) 구조체 + post() — filter(kid=20)와 probe(kid=50)가 공유.
+// filter 커널이 probe보다 앞에 있으므로 여기서 한 번만 정의한다.
+typedef struct {
+  __global uint *p1;
+  __global uint *p2;
+  long state1;
+  long state2;
+} WASEntry;
+
+inline WASEntry post(__global WASEntry *was, __global uint *p1,
+                     __global uint *p2, long state1, long state2, int idx) {
+  volatile WASEntry old = was[idx];
+  was[idx].p1 = p1;
+  was[idx].p2 = p2;
+  was[idx].state1 = state1;
+  was[idx].state2 = state2;
+  return old;
+}
+
 __kernel void//kid=20
-filterImpl_map_kernel(__global Record* d_Rin, int beginPos, int rLen, __global int* d_mark, 
-								  int smallKey, int largeKey, __global int* d_temp )
+filterImpl_map_kernel(__global Record* d_Rin, int beginPos, int rLen, __global int* d_mark,
+								  int smallKey, int largeKey, __global int* d_temp,
+								  __global WASEntry *was_buffer, int wassize, __global uint *dummy_buffer )
 {
 	int iGID = get_global_id(0);
-	Record value;
+	int wgid = get_group_id(0);
+	int num_wg = get_num_groups(0);
 	int delta=get_global_size(0);
-	int flag=0;
+	__global uint *dummy_addr = dummy_buffer;
+
+	// noWAS (wassize<=0): 기존 동작과 동일
+	if (wassize <= 0) {
+		for(int pos=iGID;pos<rLen;pos+=delta)
+		{
+			Record value = d_Rin[pos];
+			d_temp[pos] = value.x;
+			int key = value.y;
+			d_mark[pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
+		}
+		return;
+	}
+
+	// WAS: WG 단위 partition (같은 WG는 같은 CU에서 순차 실행 → race 없음, PoCL CPU 가정).
+	// main이 다음에 처리할 입력 레코드 주소(&d_Rin[pos])를 post하면 1-CU helper가 prefetch.
+	int was_per_wg = wassize / num_wg;
+	int was_base = wgid * was_per_wg;
+	int was_step = 0;
 	for(int pos=iGID;pos<rLen;pos+=delta)
 	{
-		value = d_Rin[pos];
-		d_temp[pos] = value.x;
-		int key = value.y;
-		//the filter condition		
-		if( ( key >= smallKey ) && ( key <= largeKey ) )
-		{
-			flag = 1;
+		WASEntry old = post(was_buffer, (__global uint *)&d_Rin[pos], dummy_addr,
+							pos, -1, was_base + was_step);
+		was_step++;
+		if (was_step >= was_per_wg) was_step = 0;
+		int old_pos = (int)old.state1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			Record value = d_Rin[old_pos];
+			d_temp[old_pos] = value.x;
+			int key = value.y;
+			d_mark[old_pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
 		}
-		else
-		{
-			flag=0;
+	}
+	// flush — 지연된 tail 튜플 처리 (정확성 필수): WG의 슬롯 전체를 비우며 처리
+	for (int i = 0; i < was_per_wg; i++) {
+		int slot = was_base + i;
+		int old_pos = (int)was_buffer[slot].state1;
+		was_buffer[slot].p1 = dummy_addr;
+		was_buffer[slot].state1 = -1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			Record value = d_Rin[old_pos];
+			d_temp[old_pos] = value.x;
+			int key = value.y;
+			d_mark[old_pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
 		}
-		d_mark[pos]=flag;
-	}	
+	}
 }
 
 /*__kernel void //kid=21
@@ -969,22 +1019,55 @@ filterImpl_write_noCoalesced_kernel(__global Record* d_Rout,__global Record* d_R
 }
 
 __kernel void//kid=23
-filterImpl_write_kernel(__global Record* d_Rout,__global Record* d_Rin, __global int* d_mark, __global int* d_markOutput, int beginPos, int rLen )
+filterImpl_write_kernel(__global Record* d_Rout,__global Record* d_Rin, __global int* d_mark, __global int* d_markOutput, int beginPos, int rLen,
+						__global WASEntry *was_buffer, int wassize, __global uint *dummy_buffer )
 {
 	int iGID = get_global_id(0);
-	Record value;
+	int wgid = get_group_id(0);
+	int num_wg = get_num_groups(0);
 	int delta=get_global_size(0);
-	int flag=0;
-	int writePos=0;
+	__global uint *dummy_addr = dummy_buffer;
+
+	// noWAS (wassize<=0): 기존 동작과 동일
+	if (wassize <= 0) {
+		for(int pos=iGID;pos<rLen;pos+=delta)
+		{
+			int flag=d_mark[pos];
+			int writePos=d_markOutput[pos];
+			if(flag) d_Rout[writePos]=d_Rin[pos];
+		}
+		return;
+	}
+
+	// WAS: main이 다음에 scatter할 입력 레코드 주소(&d_Rin[pos])를 post → 1-CU helper가 prefetch.
+	int was_per_wg = wassize / num_wg;
+	int was_base = wgid * was_per_wg;
+	int was_step = 0;
 	for(int pos=iGID;pos<rLen;pos+=delta)
 	{
-		flag=d_mark[pos];
-		writePos=d_markOutput[pos];
-		if(flag)
-		{
-			d_Rout[writePos]=d_Rin[pos];
+		WASEntry old = post(was_buffer, (__global uint *)&d_Rin[pos], dummy_addr,
+							pos, -1, was_base + was_step);
+		was_step++;
+		if (was_step >= was_per_wg) was_step = 0;
+		int old_pos = (int)old.state1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			int flag=d_mark[old_pos];
+			int writePos=d_markOutput[old_pos];
+			if(flag) d_Rout[writePos]=d_Rin[old_pos];
 		}
-	}	
+	}
+	// flush — 지연된 tail 처리 (정확성 필수)
+	for (int i = 0; i < was_per_wg; i++) {
+		int slot = was_base + i;
+		int old_pos = (int)was_buffer[slot].state1;
+		was_buffer[slot].p1 = dummy_addr;
+		was_buffer[slot].state1 = -1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			int flag=d_mark[old_pos];
+			int writePos=d_markOutput[old_pos];
+			if(flag) d_Rout[writePos]=d_Rin[old_pos];
+		}
+	}
 }
 
 
@@ -2567,23 +2650,8 @@ uint sim_hash(uint key, uint mod)
 	return key % mod;
 }
 
-// 논문 기반 WAS(Work-ahead Set) Entry 구조체: 포인터 3개 + 상태 정보 1개
-typedef struct {
-  __global uint *p1;
-  __global uint *p2;
-  long state1;
-  long state2;
-} WASEntry;
-
-inline WASEntry post(__global WASEntry *was, __global uint *p1,
-                     __global uint *p2, long state1, long state2, int idx) {
-  volatile WASEntry old = was[idx];
-  was[idx].p1 = p1;
-  was[idx].p2 = p2;
-  was[idx].state1 = state1;
-  was[idx].state2 = state2;
-  return old;
-}
+// (WASEntry / post() 정의는 filterImpl_map_kernel(kid=20) 앞으로 이동 — filter와
+//  probe가 공유하며, filter가 더 앞에 있어 거기서 한 번만 정의한다.)
 
 __kernel //kid 58
 void build_kernel(__global uint * rTableOnDevice,

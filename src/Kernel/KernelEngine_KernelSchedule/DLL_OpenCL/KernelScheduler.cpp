@@ -110,14 +110,18 @@ void kernel_enqueue(int size, int kid, cl_uint work_dim, const size_t *groups,
     // printf("!!!exceed GPU limit:max work item is 256!\n");
     threads[0] = 256;
   }
+  // (Geometry is controlled via NUM_WG in HJImpl; kernels run on the fission device
+  //  CommandQueue[CPU_GPU]. The earlier 8-CU build routing was reverted — it reintroduced
+  //  the power-of-2 globalSize cache conflict and hurt build.)
+  cl_command_queue q = CommandQueue[CPU_GPU];
   if ((*index) != 0) {
     ciErr1 = clEnqueueNDRangeKernel(
-        CommandQueue[CPU_GPU], (*kernel), work_dim, NULL, groups, threads, 1,
+        q, (*kernel), work_dim, NULL, groups, threads, 1,
         &List[((*index) - 1) % 2], &(List[(*index) % 2]));
     deschedule(preFlag, preBurden);
   } else
     ciErr1 =
-        clEnqueueNDRangeKernel(CommandQueue[CPU_GPU], (*kernel), work_dim, NULL,
+        clEnqueueNDRangeKernel(q, (*kernel), work_dim, NULL,
                                groups, threads, 0, NULL, &(List[*index]));
 
   (*index)++;
@@ -126,7 +130,7 @@ void kernel_enqueue(int size, int kid, cl_uint work_dim, const size_t *groups,
            ciErr1, __LINE__, __FILE__);
     cl_clean(EXIT_FAILURE);
   }
-  ciErr1 = clFlush(CommandQueue[CPU_GPU]);
+  ciErr1 = clFlush(q);
   if (ciErr1 != CL_SUCCESS) {
     printf("Error %d in clEnqueueNDRangeKernel, Line %u in file %s !!!\n\n",
            ciErr1, __LINE__, __FILE__);

@@ -45,6 +45,9 @@ extern pthread_mutex_t deschedulerflag;
 /*buffer operation is by default greedy*/
 #define Continuous
 extern int global_KernelSchedule;
+// CPU_ONLY (paper's E-CPU baseline): pin EVERY kernel and buffer op to the CPU
+// device, regardless of burden or eM. Set from the CPU_ONLY env var in EngineStart.
+int g_forceCpuOnly = 0;
 double inline getAddBurden_Copy(const int *Flag_CPU_GPU, double size) {
   if ((*Flag_CPU_GPU))
     return AddGPUBurden_Copy / base * size;
@@ -86,6 +89,12 @@ void inline CPUBurdenINC(const double *burden) {
 int Kernelscheduler(int size, int kid, int *Flag_CPU_GPU, double *burden,
                     int _CPU_GPU) {
   int CPU_GPU = 0;
+  if (g_forceCpuOnly) { // E-CPU: every kernel on the CPU
+    (*burden) = getAddCPUBurden(kid, size);
+    CPUBurdenINC(burden);
+    *Flag_CPU_GPU = 0;
+    return 0;
+  }
   if (global_KernelSchedule) {
 #ifdef Greedy
     if ((CPUBurden + getAddCPUBurden(kid, size)) <
@@ -164,6 +173,7 @@ int cl_readbufferscheduler(int size, int *Flag_CPU_GPU, double *burden,
                            int _CPU_GPU) {
   int CPU_GPU;
   (*burden) = getAddBurden_Read(Flag_CPU_GPU, size);
+  if (g_forceCpuOnly) { CPUBurdenINC(burden); *Flag_CPU_GPU = 0; return 0; } // E-CPU
   if (global_KernelSchedule) {
 #ifdef Continuous
     if (*Flag_CPU_GPU) {
@@ -204,6 +214,7 @@ int cl_writebufferscheduler(int size, int *Flag_CPU_GPU, double *burden,
                             int _CPU_GPU) {
   int CPU_GPU;
   (*burden) = getAddBurden_Write(Flag_CPU_GPU, size);
+  if (g_forceCpuOnly) { CPUBurdenINC(burden); *Flag_CPU_GPU = 0; return 0; } // E-CPU
   if (global_KernelSchedule) {
 #ifdef Continuous
     if (*Flag_CPU_GPU) {
@@ -244,6 +255,7 @@ int cl_copyBufferscheduler(int size, int *Flag_CPU_GPU, double *burden,
                            int _CPU_GPU) {
   int CPU_GPU;
   (*burden) = getAddBurden_Copy(Flag_CPU_GPU, size);
+  if (g_forceCpuOnly) { CPUBurdenINC(burden); *Flag_CPU_GPU = 0; return 0; } // E-CPU
   if (global_KernelSchedule) {
 #ifdef Continuous
     if (*Flag_CPU_GPU) {
