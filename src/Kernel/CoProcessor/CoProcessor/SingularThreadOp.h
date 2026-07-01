@@ -17,8 +17,11 @@ class SelectionOp: public SingularThreadOp
 public:
 	int lowerKey;
 	int higherKey;
+	bool ns; 
+	cl_mem nsRidOut; 
 	void execute(EXEC_MODE eM);
 	void init(cl_mem p_R, int p_rLen, int lowerKey, int higherKey);
+	void initNS(cl_mem p_R16, int p_rLen, int lowerKey, int higherKey);
 	SelectionOp(OP_MODE opt);
 	ThreadOp* getNextOp(EXEC_MODE eM);
 };

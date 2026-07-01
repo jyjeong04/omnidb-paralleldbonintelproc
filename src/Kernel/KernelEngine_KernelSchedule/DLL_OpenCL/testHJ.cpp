@@ -227,6 +227,343 @@ HJprobe_int(rHashTable,d_S,d_Rout,rLen,sLen,rHashTableBucketNum,
 	return resultsNum;
 }
 
+extern "C" int CL_hjOnly_ns(cl_mem d_R, int rLen, cl_mem d_S, int sLen,
+                            cl_mem* h_Rout, int narrow, int _CPU_GPU)
+{
+    cl_event eventList[2];
+    int index = 0;
+    int CPU_GPU;
+    double burden;
+    cl_kernel Kernel;
+    cl_int err;
+
+    cl_uint bucketNum = 1;
+    while ((int)bucketNum < rLen && bucketNum < (1u << 17)) bucketNum <<= 1;
+    if (bucketNum < 1024) bucketNum = 1024;
+    cl_uint hashBucketCap = 32; // headroom; PK-FK R has 1 tuple/key on average
+
+    cl_uint resultsNum = (cl_uint)sLen;        // bounded output = |S|
+    size_t htElems = (size_t)bucketNum * (1 + hashBucketCap * 2);
+    size_t htBytes = htElems * sizeof(cl_uint);
+
+    cl_mem rHashTable;
+    CL_MALLOC(&rHashTable, htBytes);
+    cl_uint zero = 0;
+    clEnqueueFillBuffer(CommandQueue[0], rHashTable, &zero, sizeof(cl_uint), 0, htBytes, 0, NULL, NULL);
+    // output: [0]=count, then 4 uints/match. Size to the bound |S|.
+    CL_MALLOC(h_Rout, sizeof(cl_uint) * (4 + (size_t)resultsNum * 4));
+    clEnqueueFillBuffer(CommandQueue[0], *h_Rout, &zero, sizeof(cl_uint), 0, sizeof(cl_uint), 0, NULL, NULL);
+    clFinish(CommandQueue[0]);
+
+    size_t groupSize = 256;
+    static int hjNumWG = -1;
+    if (hjNumWG < 0) hjNumWG = getenv("NUM_WG") ? atoi(getenv("NUM_WG")) : 32;
+    size_t globalSize = (size_t)hjNumWG * groupSize;
+
+    // ---- build ----
+    cl_getKernel(narrow ? (char*)"build_kernel_ns" : (char*)"build_kernel_w16", &Kernel);
+    cl_uint rTupleNum = (cl_uint)rLen;
+    err  = clSetKernelArg(Kernel, 0, sizeof(cl_mem), &d_R);
+    err |= clSetKernelArg(Kernel, 1, sizeof(cl_mem), &rHashTable);
+    err |= clSetKernelArg(Kernel, 2, sizeof(cl_uint), &rTupleNum);
+    err |= clSetKernelArg(Kernel, 3, sizeof(cl_uint), &bucketNum);
+    err |= clSetKernelArg(Kernel, 4, sizeof(cl_uint), &hashBucketCap);
+    if (err != CL_SUCCESS) { printf("Error NS build clSetKernelArg %d, %s:%u\n", err, __FILE__, __LINE__); cl_clean(EXIT_FAILURE); }
+    kernel_enqueue(rLen, 49, 1, &globalSize, &groupSize, eventList, &index, &Kernel, &CPU_GPU, &burden, _CPU_GPU);
+    clWaitForEvents(1, &eventList[(index - 1) % 2]);
+    deschedule(CPU_GPU, burden);
+    clReleaseKernel(Kernel);
+
+    // ---- probe (memory-bound scan over S) ----
+    cl_getKernel(narrow ? (char*)"probe_kernel_ns" : (char*)"probe_kernel_w16", &Kernel);
+    cl_uint sTupleNum = (cl_uint)sLen;
+    err  = clSetKernelArg(Kernel, 0, sizeof(cl_mem), &rHashTable);
+    err |= clSetKernelArg(Kernel, 1, sizeof(cl_mem), &d_S);
+    err |= clSetKernelArg(Kernel, 2, sizeof(cl_mem), h_Rout);
+    err |= clSetKernelArg(Kernel, 3, sizeof(cl_uint), &sTupleNum);
+    err |= clSetKernelArg(Kernel, 4, sizeof(cl_uint), &bucketNum);
+    err |= clSetKernelArg(Kernel, 5, sizeof(cl_uint), &hashBucketCap);
+    err |= clSetKernelArg(Kernel, 6, sizeof(cl_uint), &resultsNum);
+    {
+        cl_mem wasNull = NULL; cl_int wasOff = -1;
+        err |= clSetKernelArg(Kernel, 7, sizeof(cl_mem), &wasNull);
+        err |= clSetKernelArg(Kernel, 8, sizeof(cl_int), &wasOff);
+        err |= clSetKernelArg(Kernel, 9, sizeof(cl_mem), &wasNull);
+    }
+    if (err != CL_SUCCESS) { printf("Error NS probe clSetKernelArg %d, %s:%u\n", err, __FILE__, __LINE__); cl_clean(EXIT_FAILURE); }
+    index = 0;
+    static int nsPeMode = -1, nsPeWas = 0;
+    if (nsPeMode < 0) {
+        nsPeMode = getenv("PE_MODE") ? atoi(getenv("PE_MODE")) : 0;
+        nsPeWas  = getenv("WASSIZE") ? atoi(getenv("WASSIZE")) : 1792;
+    }
+    if (nsPeMode) {
+        HJprobe_enqueue_PE(&Kernel, sLen / (int)bucketNum, nsPeWas,
+            globalSize, groupSize, eventList, &index, &CPU_GPU, &burden, _CPU_GPU);
+    } else {
+        kernel_enqueue(sLen, 50, 1, &globalSize, &groupSize, eventList, &index, &Kernel, &CPU_GPU, &burden, _CPU_GPU);
+    }
+    clWaitForEvents(1, &eventList[(index - 1) % 2]);
+    deschedule(CPU_GPU, burden);
+
+    // read the actual match count for the [NS] marker
+    cl_uint matched = 0;
+    clEnqueueReadBuffer(CommandQueue[0], *h_Rout, CL_TRUE, 0, sizeof(cl_uint), &matched, 0, NULL, NULL);
+    fprintf(stderr, "[NS] %s HJ: |R|=%d |S|=%d matched=%u (bucketNum=%u cap=%u)\n",
+            narrow ? "compressed" : "masked(wide)", rLen, sLen, matched, bucketNum, hashBucketCap);
+
+    clReleaseKernel(Kernel);
+    CL_FREE(rHashTable);
+    return (int)resultsNum; // keep result-len semantics identical to CL_hjOnly (=|S|)
+}
+
+extern "C" int CL_hjOnly_cPDE(cl_mem d_R, int rLen, cl_mem d_S, int sLen,
+                              cl_mem* h_Rout, int _CPU_GPU)
+{
+    cl_int err = CL_SUCCESS;
+
+    cl_command_queue Qd = (g_decomEnabled && DecomCommandQueue) ? DecomCommandQueue : CommandQueue[0];
+    cl_command_queue Qe = (g_decomEnabled && NonDecomCommandQueue) ? NonDecomCommandQueue : CommandQueue[0];
+    cl_command_queue Qg = CommandQueue[1];   // GPU queue for GPU-routed E probe blocks
+
+    // Bucket geometry — identical to CL_hjOnly_ns so the match logic (and count) match.
+    cl_uint bucketNum = 1;
+    while ((int)bucketNum < rLen && bucketNum < (1u << 17)) bucketNum <<= 1;
+    if (bucketNum < 1024) bucketNum = 1024;
+    cl_uint hashBucketCap = 32;
+    cl_uint resultsNum = (cl_uint)sLen;           // bounded output = |S|
+    size_t htElems = (size_t)bucketNum * (1 + hashBucketCap * 2);
+    size_t htBytes = htElems * sizeof(cl_uint);
+
+    // ---- probe block split (CPU/GPU), like the selection cPDE ----
+    int execGpuPct = getenv("EXEC_GPU_PCT") ? atoi(getenv("EXEC_GPU_PCT")) : 0;
+    if (execGpuPct < 0) execGpuPct = 0;
+    if (execGpuPct > 100) execGpuPct = 100;
+    int B = 8;                                    // probe blocks over S
+    if (B > sLen) B = 1;
+    int blkLen = (sLen + B - 1) / B;
+    int gpuBlocks = (int)((double)B * execGpuPct / 100.0 + 0.5);
+    if (gpuBlocks > B) gpuBlocks = B;
+    int cpuBlocks = B - gpuBlocks;
+
+    // ---- P (WAS) config: engages only on CPU-E probe blocks ----
+    int peWassize = -1;
+    {
+        bool peOn = (getenv("PE_MODE") && atoi(getenv("PE_MODE")) != 0);
+        int w = getenv("WASSIZE") ? atoi(getenv("WASSIZE")) : 1792;
+        if (peOn && w > 0 && g_prefetchEnabled && PrefetchCommandQueue && cpuBlocks > 0) peWassize = w;
+    }
+    bool useWAS = (peWassize > 0);
+
+    {
+        int pCUs = (g_prefetchEnabled && useWAS) ? 1 : 0;
+        fprintf(stderr,
+            "[cPDE-HJ] P=%d D=%d E_cpu=%d E_gpu=%s (gpu_pct=%d, blocks=%d: %d gpu / %d cpu)\n",
+            pCUs, g_decomCUs, (cpuBlocks > 0 ? (g_decomEnabled ? g_nonDecomCUs : 1) : 0),
+            (gpuBlocks > 0 ? "ON" : "OFF"), execGpuPct, B, gpuBlocks, cpuBlocks);
+    }
+
+    // ---- hash table + output buffers ----
+    cl_mem rHashTable = NULL;
+    CL_MALLOC(&rHashTable, htBytes);
+    cl_uint zero = 0;
+    clEnqueueFillBuffer(CommandQueue[0], rHashTable, &zero, sizeof(cl_uint), 0, htBytes, 0, NULL, NULL);
+    // output: [0]=count, then 4 uints/match. Size to the bound |S|.
+    CL_MALLOC(h_Rout, sizeof(cl_uint) * (4 + (size_t)resultsNum * 4));
+    clEnqueueFillBuffer(CommandQueue[0], *h_Rout, &zero, sizeof(cl_uint), 0, sizeof(cl_uint), 0, NULL, NULL);
+    clFinish(CommandQueue[0]);
+
+    cl_kernel kDec = clCreateKernel(Program, "decompress_hj_kernel", &err);
+    cl_kernel kBuild = clCreateKernel(Program, "build_kernel_w16", &err);
+    cl_kernel kProbe = clCreateKernel(Program, "probe_kernel_w16", &err);     // CPU-E probe
+    cl_kernel kProbeGpu = clCreateKernel(Program, "probe_kernel_w16", &err);  // GPU-E probe (separate obj)
+    if (err != CL_SUCCESS || !kDec || !kBuild || !kProbe || !kProbeGpu) {
+        printf("Error %d creating cPDE-HJ kernels, Line %u in file %s !!!\n\n", err, __LINE__, __FILE__);
+        cl_clean(EXIT_FAILURE);
+    }
+
+    size_t lThreads = 256;
+    size_t buildThreads = 256;
+    static int hjNumWG = -1;
+    if (hjNumWG < 0) hjNumWG = getenv("NUM_WG") ? atoi(getenv("NUM_WG")) : 32;
+    size_t gWide = (size_t)hjNumWG * lThreads;    // global size for build/probe (E)
+
+    cl_mem d_Rdec = NULL;
+    CL_MALLOC(&d_Rdec, sizeof(Record) * rLen);
+    if (!d_Rdec) { printf("Error: cPDE-HJ d_Rdec alloc failed, %s:%u\n", __FILE__, __LINE__); cl_clean(EXIT_FAILURE); }
+    {
+        int baseR = 0;
+        clSetKernelArg(kDec, 0, sizeof(cl_mem), &d_R);
+        clSetKernelArg(kDec, 1, sizeof(cl_mem), &d_Rdec);
+        clSetKernelArg(kDec, 2, sizeof(cl_int), &rLen);
+        clSetKernelArg(kDec, 3, sizeof(cl_int), &baseR);
+        size_t gDec = (size_t)rLen;
+        gDec = ((gDec + lThreads - 1) / lThreads) * lThreads;
+        if (gDec == 0) gDec = lThreads;
+        err = clEnqueueNDRangeKernel(Qd, kDec, 1, NULL, &gDec, &lThreads, 0, NULL, NULL);
+        if (err != CL_SUCCESS) { printf("Error %d enqueue R decompress, %s:%u\n", err, __FILE__, __LINE__); cl_clean(EXIT_FAILURE); }
+        clFinish(Qd);
+    }
+    {
+        cl_uint rTupleNum = (cl_uint)rLen;
+        clSetKernelArg(kBuild, 0, sizeof(cl_mem), &d_Rdec);
+        clSetKernelArg(kBuild, 1, sizeof(cl_mem), &rHashTable);
+        clSetKernelArg(kBuild, 2, sizeof(cl_uint), &rTupleNum);
+        clSetKernelArg(kBuild, 3, sizeof(cl_uint), &bucketNum);
+        clSetKernelArg(kBuild, 4, sizeof(cl_uint), &hashBucketCap);
+        // build runs on the CPU-E queue (Qe); if E is all-GPU (cpuBlocks==0, fission
+        // {n,0}) Qe falls back to CommandQueue[0] which still sees the same context.
+        cl_command_queue Qbuild = (g_decomEnabled && NonDecomCommandQueue) ? NonDecomCommandQueue : CommandQueue[0];
+        err = clEnqueueNDRangeKernel(Qbuild, kBuild, 1, NULL, &gWide, &buildThreads, 0, NULL, NULL);
+        if (err != CL_SUCCESS) { printf("Error %d enqueue build, %s:%u\n", err, __FILE__, __LINE__); cl_clean(EXIT_FAILURE); }
+        clFinish(Qbuild);                          // BARRIER: hash table complete before probe
+    }
+
+    cl_mem was_buffer = NULL, dummy_buffer = NULL, last_tag_buffer = NULL;
+    cl_kernel hk = NULL;
+    if (useWAS) {
+        cl_command_queue Qw = Qe;                  // init on the E (exec) sub-device
+        size_t wasEntrySize = 4 * sizeof(cl_ulong);
+        was_buffer = clCreateBuffer(Context, CL_MEM_READ_WRITE, (size_t)peWassize * wasEntrySize, NULL, &err);
+        dummy_buffer = clCreateBuffer(Context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, 64, NULL, &err);
+        last_tag_buffer = clCreateBuffer(Context, CL_MEM_READ_WRITE, (size_t)peWassize * sizeof(cl_ulong), NULL, &err);
+        if (!was_buffer || !dummy_buffer || !last_tag_buffer) {
+            printf("Error: cPDE-HJ PE WAS buffer alloc failed, %s:%u\n", __FILE__, __LINE__); cl_clean(EXIT_FAILURE);
+        }
+        void *dm = clEnqueueMapBuffer(Qw, dummy_buffer, CL_TRUE, CL_MAP_WRITE, 0, 64, 0, NULL, NULL, &err);
+        memset(dm, 0, 64);
+        clEnqueueUnmapMemObject(Qw, dummy_buffer, dm, 0, NULL, NULL);
+        clFinish(Qw);
+        cl_ulong *wm = (cl_ulong *)clEnqueueMapBuffer(Qw, was_buffer, CL_TRUE, CL_MAP_WRITE, 0, (size_t)peWassize * wasEntrySize, 0, NULL, NULL, &err);
+        void *dm2 = clEnqueueMapBuffer(Qw, dummy_buffer, CL_TRUE, CL_MAP_READ, 0, 8, 0, NULL, NULL, &err);
+        cl_ulong dummyVal = (cl_ulong)(uintptr_t)dm2;
+        clEnqueueUnmapMemObject(Qw, dummy_buffer, dm2, 0, NULL, NULL);
+        for (int j = 0; j < peWassize; j++) { wm[j*4] = dummyVal; wm[j*4+1] = dummyVal; wm[j*4+2] = (cl_ulong)-1; wm[j*4+3] = (cl_ulong)-1; }
+        clEnqueueUnmapMemObject(Qw, was_buffer, wm, 0, NULL, NULL);
+        cl_ulong *lm = (cl_ulong *)clEnqueueMapBuffer(Qw, last_tag_buffer, CL_TRUE, CL_MAP_WRITE, 0, (size_t)peWassize * sizeof(cl_ulong), 0, NULL, NULL, &err);
+        memset(lm, 0, (size_t)peWassize * sizeof(cl_ulong));
+        clEnqueueUnmapMemObject(Qw, last_tag_buffer, lm, 0, NULL, NULL);
+        clFinish(Qw);
+        hk = clCreateKernel(Program, "WAS_kernel", &err);
+        cl_int wmode = 3;                          // backward + spin + nopause (fixed)
+        clSetKernelArg(hk, 0, sizeof(cl_mem), &was_buffer);
+        clSetKernelArg(hk, 1, sizeof(cl_int), &peWassize);
+        clSetKernelArg(hk, 2, sizeof(cl_mem), &dummy_buffer);
+        clSetKernelArg(hk, 3, sizeof(cl_mem), &last_tag_buffer);
+        clSetKernelArg(hk, 4, sizeof(cl_int), &wmode);
+        size_t wg = 1, wl = 1;
+        err = clEnqueueNDRangeKernel(PrefetchCommandQueue, hk, 1, NULL, &wg, &wl, 0, NULL, NULL);
+        if (err != CL_SUCCESS) { printf("Error %d launching cPDE-HJ WAS helper, %s:%u\n", err, __FILE__, __LINE__); cl_clean(EXIT_FAILURE); }
+        clFlush(PrefetchCommandQueue);
+        fprintf(stderr, "[PE] WAS cPDE-HJ probe engaged on prefetch sub-device (prefetching probe hash-table reads, wassize=%d)\n", peWassize);
+    }
+
+    // noWAS args for GPU-E probe blocks (and CPU-E when PE off).
+    cl_mem wasNull = NULL; cl_int wasOff = -1;
+
+    cl_mem d_Sdec = NULL;
+    CL_MALLOC(&d_Sdec, sizeof(Record) * sLen);
+    if (!d_Sdec) { printf("Error: cPDE-HJ d_Sdec alloc failed, %s:%u\n", __FILE__, __LINE__); cl_clean(EXIT_FAILURE); }
+
+    std::vector<cl_event> decEvt(B, (cl_event)NULL);
+    std::vector<cl_event> prbEvt(B, (cl_event)NULL);
+
+    for (int b = 0; b < B; b++) {
+        int off = b * blkLen;
+        int len = blkLen;
+        if (off + len > sLen) len = sLen - off;
+        if (len <= 0) { B = b; break; }
+
+        cl_buffer_region rIn  = { (size_t)off * sizeof(unsigned short), (size_t)len * sizeof(unsigned short) };
+        cl_buffer_region rOut = { (size_t)off * sizeof(Record),         (size_t)len * sizeof(Record) };
+        cl_mem subIn  = clCreateSubBuffer(d_S,    CL_MEM_READ_ONLY,  CL_BUFFER_CREATE_TYPE_REGION, &rIn,  &err);
+        cl_mem subDec = clCreateSubBuffer(d_Sdec, CL_MEM_READ_WRITE, CL_BUFFER_CREATE_TYPE_REGION, &rOut, &err);
+        if (err != CL_SUCCESS) { printf("Error %d cPDE-HJ S sub-buffers (b=%d), %s:%u\n", err, b, __FILE__, __LINE__); cl_clean(EXIT_FAILURE); }
+
+        // D: decompress this S block on the decom sub-device.
+        int baseS = off;                            // keep global rid surrogate
+        clSetKernelArg(kDec, 0, sizeof(cl_mem), &subIn);
+        clSetKernelArg(kDec, 1, sizeof(cl_mem), &subDec);
+        clSetKernelArg(kDec, 2, sizeof(cl_int), &len);
+        clSetKernelArg(kDec, 3, sizeof(cl_int), &baseS);
+        size_t gDec = (size_t)len;
+        gDec = ((gDec + lThreads - 1) / lThreads) * lThreads;
+        if (gDec == 0) gDec = lThreads;
+        err = clEnqueueNDRangeKernel(Qd, kDec, 1, NULL, &gDec, &lThreads, 0, NULL, &decEvt[b]);
+        if (err != CL_SUCCESS) { printf("Error %d enqueue S decompress (b=%d), %s:%u\n", err, b, __FILE__, __LINE__); cl_clean(EXIT_FAILURE); }
+        clFlush(Qd);
+
+        // E: probe this decompressed S block (waits on its decompress).
+        bool gpuE = (b < gpuBlocks);
+        cl_kernel kP = gpuE ? kProbeGpu : kProbe;
+        cl_command_queue Qexec = gpuE ? Qg : Qe;
+        cl_uint sTupleNum = (cl_uint)len;
+        clSetKernelArg(kP, 0, sizeof(cl_mem), &rHashTable);
+        clSetKernelArg(kP, 1, sizeof(cl_mem), &subDec);     // decompressed S block (key in .x)
+        clSetKernelArg(kP, 2, sizeof(cl_mem), h_Rout);      // SHARED match counter+output
+        clSetKernelArg(kP, 3, sizeof(cl_uint), &sTupleNum);
+        clSetKernelArg(kP, 4, sizeof(cl_uint), &bucketNum);
+        clSetKernelArg(kP, 5, sizeof(cl_uint), &hashBucketCap);
+        clSetKernelArg(kP, 6, sizeof(cl_uint), &resultsNum);
+        if (!gpuE && useWAS) {
+            clSetKernelArg(kP, 7, sizeof(cl_mem), &was_buffer);
+            clSetKernelArg(kP, 8, sizeof(cl_int), &peWassize);
+            clSetKernelArg(kP, 9, sizeof(cl_mem), &dummy_buffer);
+        } else {
+            clSetKernelArg(kP, 7, sizeof(cl_mem), &wasNull); // noWAS
+            clSetKernelArg(kP, 8, sizeof(cl_int), &wasOff);
+            clSetKernelArg(kP, 9, sizeof(cl_mem), &wasNull);
+        }
+        size_t gP = gWide;
+        size_t lP = lThreads;
+        if (gpuE && lP > 256) lP = 256;             // GPU local-size cap
+        if (gpuE) { gP = (gP / lP) * lP; if (gP == 0) gP = lP; }
+        err = clEnqueueNDRangeKernel(Qexec, kP, 1, NULL, &gP, &lP, 1, &decEvt[b], &prbEvt[b]);
+        if (err != CL_SUCCESS) { printf("Error %d enqueue probe (b=%d, %s), %s:%u\n", err, b, (gpuE ? "GPU" : "CPU"), __FILE__, __LINE__); cl_clean(EXIT_FAILURE); }
+        clFlush(Qexec);
+
+        clReleaseMemObject(subIn);
+        clReleaseMemObject(subDec);
+    }
+
+    clFinish(Qd);
+    if (cpuBlocks > 0 && Qe) clFinish(Qe);
+    if (gpuBlocks > 0) clFinish(Qg);
+    for (int b = 0; b < B; b++) {
+        if (decEvt[b]) clReleaseEvent(decEvt[b]);
+        if (prbEvt[b]) clReleaseEvent(prbEvt[b]);
+    }
+
+    // ---- P teardown: signal the WAS helper to stop, then join it. ----
+    if (useWAS) {
+        cl_uint *cs = (cl_uint *)clEnqueueMapBuffer(Qe, dummy_buffer, CL_TRUE, CL_MAP_WRITE, 0, 64, 0, NULL, NULL, &err);
+        cs[1] = 1;
+        clEnqueueUnmapMemObject(Qe, dummy_buffer, cs, 0, NULL, NULL);
+        clFinish(Qe);
+        clFinish(PrefetchCommandQueue);
+        clReleaseKernel(hk);
+        clReleaseMemObject(was_buffer);
+        clReleaseMemObject(dummy_buffer);
+        clReleaseMemObject(last_tag_buffer);
+    }
+
+    // read the actual match count for the banner.
+    cl_uint matched = 0;
+    clEnqueueReadBuffer(CommandQueue[0], *h_Rout, CL_TRUE, 0, sizeof(cl_uint), &matched, 0, NULL, NULL);
+    fprintf(stderr, "[cPDE-HJ] D=%d E_cpu=%d E_gpu=%s blocks=%d: |R|=%d |S|=%d matched=%u (bucketNum=%u cap=%u)\n",
+            g_decomCUs, (cpuBlocks > 0 ? (g_decomEnabled ? g_nonDecomCUs : 1) : 0),
+            (gpuBlocks > 0 ? "ON" : "OFF"), B, rLen, sLen, matched, bucketNum, hashBucketCap);
+
+    clReleaseKernel(kDec);
+    clReleaseKernel(kBuild);
+    clReleaseKernel(kProbe);
+    clReleaseKernel(kProbeGpu);
+    CL_FREE(d_Rdec);
+    CL_FREE(d_Sdec);
+    CL_FREE(rHashTable);
+    return (int)resultsNum;
+}
+
 void testHJ(int rLen, int sLen)
 {
 	int _CPU_GPU=0;

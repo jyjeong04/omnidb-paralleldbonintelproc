@@ -91,6 +91,40 @@ struct ExecStatus
 		}
 		return resultLen;
 	}
+	int getDataTable16(int id, char* columnName, cl_mem* Rout)
+	{
+		assert(id>=0 && id<numTables);
+		assert(RID_baseTable[id]==NULL); // NS narrow path only for base columns
+		int resultLen;
+		easedb->getTable16(columnName,Rout,&resultLen);
+		RIDLen[id]=resultLen;
+		return resultLen;
+	}
+	int getDataTableMasked(int id, char* columnName, cl_mem* Rout,EXEC_MODE eM)
+	{
+		assert(id>=0 && id<numTables);
+		assert(RID_baseTable[id]==NULL);
+		int resultLen;
+		easedb->getTableMasked(columnName,Rout,&resultLen);
+		RIDLen[id]=resultLen;
+		return resultLen;
+	}
+	int getDataTableHJ16(int id, char* columnName, cl_mem* Rout, int isBuild)
+	{
+		assert(id>=0 && id<numTables);
+		int outLen=0;
+		easedb->getTableHJ16(columnName,Rout,&outLen,isBuild);
+		RIDLen[id]=outLen;
+		return outLen;
+	}
+	int getDataTableHJMasked(int id, char* columnName, cl_mem* Rout, int isBuild)
+	{
+		assert(id>=0 && id<numTables);
+		int outLen=0;
+		easedb->getTableHJMasked(columnName,Rout,&outLen,isBuild);
+		RIDLen[id]=outLen;
+		return outLen;
+	}
 	//always get the original table. we don't need to adapt.
 	int getBaseTable(int id, char* columnName, cl_mem* Rout)
 	{

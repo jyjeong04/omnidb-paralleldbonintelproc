@@ -208,10 +208,29 @@ void QueryPlanNode::initOp(EXEC_MODE eM)
 			lowerKey = rand()%TEST_SMALL;
 			higherKey = lowerKey;
 		}
-		assert(num_col==1);		
+		assert(num_col==1);
+		static int nsCompress = -1, nsMask16 = -1;
+		if (nsCompress < 0) {
+			const char* c = getenv("NS_COMPRESS");
+			nsCompress = (c && atoi(c)) ? 1 : 0;
+			const char* m = getenv("NS_MASK16");
+			nsMask16 = (m && atoi(m)) ? 1 : 0;
+		}
+		if (nsCompress || nsMask16) {
+			lowerKey  &= 0xFFFF;
+			higherKey &= 0xFFFF;
+		}
 		ID0=planStatus->getTableID(table1,columns[0]);
-		Query_rLen=planStatus->getDataTable(ID0,columns[0],&Rin,eM);
-		((SelectionOp*)tOp)->init(Rin,Query_rLen,lowerKey,higherKey);
+		if (nsCompress) {
+			Query_rLen=planStatus->getDataTable16(ID0,columns[0],&Rin);
+			((SelectionOp*)tOp)->initNS(Rin,Query_rLen,lowerKey,higherKey);
+		} else if (nsMask16) {
+			Query_rLen=planStatus->getDataTableMasked(ID0,columns[0],&Rin,eM);
+			((SelectionOp*)tOp)->init(Rin,Query_rLen,lowerKey,higherKey);
+		} else {
+			Query_rLen=planStatus->getDataTable(ID0,columns[0],&Rin,eM);
+			((SelectionOp*)tOp)->init(Rin,Query_rLen,lowerKey,higherKey);
+		}
 	}
 	else if(optType>=JOIN_NINLJ && optType<=JOIN_HJ)
 	{
@@ -243,10 +262,25 @@ void QueryPlanNode::initOp(EXEC_MODE eM)
 			((BinaryThreadOp*)tOp)->init(Rin,Query_rLen,Sin,sLen);
 		}else{
 			ID0=planStatus->getTableID(table1,columns[0]);
-			Query_rLen=planStatus->getDataTable(ID0,columns[0],&Rin,eM);			
 			ID1=planStatus->getTableID(table2,columns[1]);
-			sLen=planStatus->getDataTable(ID1,columns[1],&Sin,eM);
-			((BinaryThreadOp*)tOp)->init(Rin,Query_rLen,Sin,sLen);
+			static int hjNsCompress=-1, hjNsMask16=-1;
+			if(hjNsCompress<0){
+				const char* c=getenv("NS_COMPRESS"); hjNsCompress=(c&&atoi(c))?1:0;
+				const char* m=getenv("NS_MASK16");   hjNsMask16  =(m&&atoi(m))?1:0;
+			}
+			if(optType==JOIN_HJ && hjNsCompress){
+				Query_rLen=planStatus->getDataTableHJ16(ID0,columns[0],&Rin,1/*build*/);
+				sLen      =planStatus->getDataTableHJ16(ID1,columns[1],&Sin,0/*probe*/);
+				((BinaryThreadOp*)tOp)->initNSHJ(Rin,Query_rLen,Sin,sLen,1/*narrow*/);
+			}else if(optType==JOIN_HJ && hjNsMask16){
+				Query_rLen=planStatus->getDataTableHJMasked(ID0,columns[0],&Rin,1/*build*/);
+				sLen      =planStatus->getDataTableHJMasked(ID1,columns[1],&Sin,0/*probe*/);
+				((BinaryThreadOp*)tOp)->initNSHJ(Rin,Query_rLen,Sin,sLen,0/*wide*/);
+			}else{
+				Query_rLen=planStatus->getDataTable(ID0,columns[0],&Rin,eM);
+				sLen=planStatus->getDataTable(ID1,columns[1],&Sin,eM);
+				((BinaryThreadOp*)tOp)->init(Rin,Query_rLen,Sin,sLen);
+			}
 		}
 	}
 	else if(optType==ORDER_BY)
@@ -283,9 +317,12 @@ void QueryPlanNode::PostExecution(EXEC_MODE eM)
 		cout<<"post execution is not required for"<<OpToString(optType,EXEC_CPU)<<endl;
 	}
 	else if(optType==SELECTION)//we need to get the matching key values.
-	{		
+	{
 		//Kernel_bufferchecking(tOp->Rout,tOp->numResult);
-		planStatus->addDataTable(ID0,tOp->Rout,tOp->numResult,dataStore,eM);
+		if(((SelectionOp*)tOp)->ns)
+			planStatus->addRIDList(ID0,((SelectionOp*)tOp)->nsRidOut,tOp->numResult,dataStore);
+		else
+			planStatus->addDataTable(ID0,tOp->Rout,tOp->numResult,dataStore,eM);
 	}
 	else if(optType==JOIN_NINLJ||optType==JOIN_INLJ||optType==JOIN_SMJ||optType==JOIN_HJ)
 	{

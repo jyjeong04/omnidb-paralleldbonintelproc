@@ -33,6 +33,15 @@ cl_command_queue PrefetchCommandQueue = NULL;
 cl_command_queue FullCPUCommandQueue = NULL; // 8-CU queue on parent Device[0] (no-helper phases)
 int g_prefetchEnabled = 0;
 static int g_prefetchWASSize = 0;
+
+
+cl_device_id    DecomSubDevice = NULL;
+cl_device_id    NonDecomSubDevice = NULL;
+cl_command_queue DecomCommandQueue = NULL;
+cl_command_queue NonDecomCommandQueue = NULL;
+int g_decomEnabled = 0;
+int g_decomCUs = 0;
+int g_nonDecomCUs = 0;
 extern cl_ulong totalGlobalMemory[2];     /**< Max global memory allowed */
 extern cl_ulong usedtotalGlobalMemory[2]; /**< Max global memory used */
 #define APU
@@ -428,7 +437,9 @@ void cl_copyBuffer(cl_mem dest, int destOffset, cl_mem src, int srcOffset,
   clFlush(CommandQueue[CPU_GPU]);
 }
 void cl_clean(int iExitCode) {
-  // Cleanup prefetch resources first
+  if (g_decomEnabled) {
+    cl_cleanup_decom();
+  }
   if (g_prefetchEnabled) {
     cl_cleanup_prefetch();
   }
@@ -723,4 +734,176 @@ void cl_cleanup_prefetch() {
     MainCPUSubDevice = NULL;
   }
   printf("[Prefetch] Cleanup complete.\n");
+}
+
+void cl_init_decom() {
+  cl_int err;
+
+  // n = number of CUs for decompression (D). Read once from DECOM_CU.
+  int n = getenv("DECOM_CU") ? atoi(getenv("DECOM_CU")) : 0;
+
+  cl_uint maxCUs = 0;
+  err = clGetDeviceInfo(Device[0], CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(cl_uint),
+                        &maxCUs, NULL);
+  if (err != CL_SUCCESS) {
+    printf("[cPDE] Error %d querying CL_DEVICE_MAX_COMPUTE_UNITS\n", err);
+    g_decomEnabled = 0;
+    return;
+  }
+  printf("[cPDE] CPU Device has %u compute units\n", maxCUs);
+
+  // P takes 1 CU up front if prefetch fission is active.
+  int reserved = g_prefetchEnabled ? 1 : 0;
+  int avail = (int)maxCUs - reserved;        // CUs left to split between D and E
+
+  int execGpuPct = getenv("EXEC_GPU_PCT") ? atoi(getenv("EXEC_GPU_PCT")) : 0;
+  if (execGpuPct < 0) execGpuPct = 0;
+  if (execGpuPct > 100) execGpuPct = 100;
+  bool eAllGpu = (execGpuPct >= 100);
+
+  if (n < 1) n = 1;
+
+  if (eAllGpu) {
+    if (n > avail) n = avail;            // can't exceed available CUs
+    int dCUs = avail;                    // D owns every CPU CU left after P
+    DecomSubDevice = NULL;               // no fission needed for the {n,0} case
+    NonDecomSubDevice = NULL;
+    DecomCommandQueue = CommandQueue[0]; // full-CPU (or 7-CU PE-main) queue for D
+    NonDecomCommandQueue = NULL;         // E is on GPU; no CPU E queue
+    g_decomCUs = dCUs;
+    g_nonDecomCUs = 0;
+    g_decomEnabled = 1;
+    printf("[cPDE] cDE-b ({%d,0}): D=%d CU on CommandQueue[0] (full CPU), "
+           "E entirely on GPU (CommandQueue[1])\n", dCUs, dCUs);
+    fprintf(stderr, "[cPDE] cDE-b: D=%d CU (CPU), E=0 CU (GPU)\n", dCUs);
+    return;
+  }
+
+  if (n > avail - 1) {
+    // need at least 1 CU left for E
+    printf("[cPDE] WARNING: DECOM_CU=%d too large (avail=%d, reserved P=%d); "
+           "clamping to %d.\n", n, avail, reserved, avail - 1);
+    n = avail - 1;
+  }
+  if (n < 1 || avail < 2) {
+    printf("[cPDE] WARNING: cannot split %d CU(s) into D+E. cPDE disabled.\n",
+           avail);
+    g_decomEnabled = 0;
+    return;
+  }
+  int eCUs = avail - n;                        // CUs for E
+
+  cl_uint maxSubDevices = 0;
+  err = clGetDeviceInfo(Device[0], CL_DEVICE_PARTITION_MAX_SUB_DEVICES,
+                        sizeof(cl_uint), &maxSubDevices, NULL);
+  if (err != CL_SUCCESS || maxSubDevices < 2) {
+    printf("[cPDE] WARNING: device does not support partition "
+           "(maxSubDevices=%u, err=%d). cPDE disabled.\n", maxSubDevices, err);
+    g_decomEnabled = 0;
+    return;
+  }
+
+  cl_device_id parent = Device[0];
+  cl_device_id subDevices[3];
+  cl_uint numRet = 0;
+
+  if (g_prefetchEnabled) {
+    // 3-way: {1 (P), n (D), 7-n (E)}
+    cl_device_partition_property props[] = {
+        CL_DEVICE_PARTITION_BY_COUNTS,
+        (cl_device_partition_property)1,
+        (cl_device_partition_property)n,
+        (cl_device_partition_property)eCUs,
+        CL_DEVICE_PARTITION_BY_COUNTS_LIST_END, 0};
+    err = clCreateSubDevices(parent, props, 3, subDevices, &numRet);
+    if (err != CL_SUCCESS || numRet < 3) {
+      printf("[cPDE] Error %d in clCreateSubDevices (3-way {1,%d,%d}). "
+             "cPDE disabled.\n", err, n, eCUs);
+      g_decomEnabled = 0;
+      return;
+    }
+    DecomSubDevice    = subDevices[1];
+    NonDecomSubDevice = subDevices[2];
+    clReleaseDevice(subDevices[0]);
+    printf("[cPDE] 3-way fission: P=1 CU, D=%d CU, E=%d CU "
+           "(PE already owns its own P sub-device)\n", n, eCUs);
+  } else {
+    // 2-way: {n (D), 8-n (E)}
+    cl_device_partition_property props[] = {
+        CL_DEVICE_PARTITION_BY_COUNTS,
+        (cl_device_partition_property)n,
+        (cl_device_partition_property)eCUs,
+        CL_DEVICE_PARTITION_BY_COUNTS_LIST_END, 0};
+    err = clCreateSubDevices(parent, props, 2, subDevices, &numRet);
+    if (err != CL_SUCCESS || numRet < 2) {
+      printf("[cPDE] Error %d in clCreateSubDevices (2-way {%d,%d}). "
+             "cPDE disabled.\n", err, n, eCUs);
+      g_decomEnabled = 0;
+      return;
+    }
+    DecomSubDevice    = subDevices[0];
+    NonDecomSubDevice = subDevices[1];
+    printf("[cPDE] 2-way fission: D=%d CU, E=%d CU\n", n, eCUs);
+  }
+
+  DecomCommandQueue = clCreateCommandQueue(Context, DecomSubDevice, 0, &err);
+  if (err != CL_SUCCESS) {
+    printf("[cPDE] Error %d creating DecomCommandQueue. cPDE disabled.\n", err);
+    if (DecomSubDevice) clReleaseDevice(DecomSubDevice);
+    if (NonDecomSubDevice) clReleaseDevice(NonDecomSubDevice);
+    DecomSubDevice = NonDecomSubDevice = NULL;
+    g_decomEnabled = 0;
+    return;
+  }
+  NonDecomCommandQueue =
+      clCreateCommandQueue(Context, NonDecomSubDevice, 0, &err);
+  if (err != CL_SUCCESS) {
+    printf("[cPDE] Error %d creating NonDecomCommandQueue. cPDE disabled.\n",
+           err);
+    clReleaseCommandQueue(DecomCommandQueue);
+    DecomCommandQueue = NULL;
+    clReleaseDevice(DecomSubDevice);
+    clReleaseDevice(NonDecomSubDevice);
+    DecomSubDevice = NonDecomSubDevice = NULL;
+    g_decomEnabled = 0;
+    return;
+  }
+
+  cl_uint dCU = 0, eCUq = 0;
+  clGetDeviceInfo(DecomSubDevice, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(cl_uint),
+                  &dCU, NULL);
+  clGetDeviceInfo(NonDecomSubDevice, CL_DEVICE_MAX_COMPUTE_UNITS,
+                  sizeof(cl_uint), &eCUq, NULL);
+  g_decomCUs = (int)dCU;
+  g_nonDecomCUs = (int)eCUq;
+  g_decomEnabled = 1;
+  printf("[cPDE] decom CUs=%u (DecomCommandQueue), exec CUs=%u "
+         "(NonDecomCommandQueue)\n", dCU, eCUq);
+  fprintf(stderr, "[cPDE] decom CUs=%u, exec CUs=%u\n", dCU, eCUq);
+}
+
+void cl_cleanup_decom() {
+  if (DecomCommandQueue && DecomCommandQueue == CommandQueue[0]) {
+    clFinish(DecomCommandQueue);
+    DecomCommandQueue = NULL;
+  } else if (DecomCommandQueue) {
+    clFinish(DecomCommandQueue);
+    clReleaseCommandQueue(DecomCommandQueue);
+    DecomCommandQueue = NULL;
+  }
+  if (NonDecomCommandQueue) {
+    clFinish(NonDecomCommandQueue);
+    clReleaseCommandQueue(NonDecomCommandQueue);
+    NonDecomCommandQueue = NULL;
+  }
+  if (DecomSubDevice) {
+    clReleaseDevice(DecomSubDevice);
+    DecomSubDevice = NULL;
+  }
+  if (NonDecomSubDevice) {
+    clReleaseDevice(NonDecomSubDevice);
+    NonDecomSubDevice = NULL;
+  }
+  g_decomEnabled = 0;
+  printf("[cPDE] Cleanup complete.\n");
 }

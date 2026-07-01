@@ -882,6 +882,10 @@ void EngineStart(bool handShake, int _KernelSchedule) {
     g_prefetchEnabled = 1; // cl_init_prefetch() resets to 0 if fission fails
     cl_init_prefetch();    // device fission: 1-CU prefetch + 7-CU main sub-devices
   }
+  bool decomRequested = (getenv("DECOM_MODE") && atoi(getenv("DECOM_MODE")) != 0);
+  if (decomRequested) {
+    cl_init_decom();       // 3-way (or 2-way) device fission for D+E
+  }
 
   cl_prepareProgram((char *)"primitive.cl", dir);
   if (getenv("PE_SELFTEST")) { extern void pe_selftest(); pe_selftest(); exit(0); }

@@ -26,6 +26,9 @@ Database::Database(void) {
   cc_indexObjs = (HashTable *)malloc(sizeof(HashTable));
   cc_indexObjs->init();
   tables = (Record **)malloc(sizeof(Record *) * MAX_TABLE_NUM);
+  tables16 = (unsigned short **)malloc(sizeof(unsigned short *) * MAX_TABLE_NUM);
+  for (int t = 0; t < MAX_TABLE_NUM; t++)
+    tables16[t] = NULL;
   cpu_treeIndexes =
       (CUDA_CSSTree **)malloc(sizeof(CUDA_CSSTree *) * MAX_TABLE_NUM);
   gpu_treeIndexes =
@@ -149,6 +152,94 @@ int Database::getTable(char *rName, cl_mem *Rout, int *Query_rLen) {
     exit(1);
   }
   return id;
+}
+
+void Database::nsMaskHostTableOnce(int id) {
+  if (id < 0 || tables[id] == NULL)
+    return;
+  int len = tPro[id].Query_rLen;
+  Record *R = tables[id];
+  for (int i = 0; i < len; i++)
+    R[i].value = R[i].value & 0xFFFF; // null-suppress to 16 bits (value-preserving)
+}
+
+int Database::getTableMasked(char *rName, cl_mem *Rout, int *Query_rLen) {
+  int id = -1;
+  if (nameIndex->Lookup(rName, &id) == true) {
+    nsMaskHostTableOnce(id);
+    *Query_rLen = tPro[id].Query_rLen;
+    int memSize = (*Query_rLen) * sizeof(Record);
+    CL_CREATE(Rout, memSize);
+    CopyCPUToGPU(*Rout, tables[id], memSize);
+  } else {
+    cout << "table not found, " << rName << endl;
+    exit(1);
+  }
+  return id;
+}
+
+int Database::getTable16(char *rName, cl_mem *Rout, int *Query_rLen) {
+  int id = -1;
+  if (nameIndex->Lookup(rName, &id) == true) {
+    nsMaskHostTableOnce(id);
+    int len = tPro[id].Query_rLen;
+    *Query_rLen = len;
+    if (tables16[id] == NULL) {
+      tables16[id] =
+          (unsigned short *)malloc(sizeof(unsigned short) * len);
+      for (int i = 0; i < len; i++)
+        tables16[id][i] = (unsigned short)(tables[id][i].value & 0xFFFF);
+    }
+    int memSize = len * sizeof(unsigned short);
+    CL_CREATE(Rout, memSize); // 16M * 2B = 32MB
+    CopyCPUToGPU(*Rout, tables16[id], memSize);
+  } else {
+    cout << "table not found, " << rName << endl;
+    exit(1);
+  }
+  return id;
+}
+
+static unsigned int ns_hj_U() {
+  unsigned int U = 65536;
+  const char* e = getenv("NS_HJ_U");
+  if (e) { int v = atoi(e); if (v > 0 && v <= 65536) U = (unsigned int)v; }
+  return U;
+}
+int Database::getTableHJ16(char* rName, cl_mem* Rout, int* outLen, int isBuild) {
+  unsigned int U = ns_hj_U();
+  int len = isBuild ? (int)U : Query_rLen; // R = U unique keys; S = full FK relation
+  unsigned short* tmp = (unsigned short*)malloc(sizeof(unsigned short) * len);
+  if (isBuild) {
+    for (int i = 0; i < len; i++) tmp[i] = (unsigned short)(i % U);
+  } else {
+    unsigned int s = 0x9E3779B9u;
+    for (int i = 0; i < len; i++) { s = s * 1664525u + 1013904223u; tmp[i] = (unsigned short)((s >> 8) % U); }
+  }
+  int memSize = len * sizeof(unsigned short);
+  CL_CREATE(Rout, memSize);
+  CopyCPUToGPU(*Rout, tmp, memSize);
+  free(tmp);
+  *outLen = len;
+  return 0;
+}
+
+int Database::getTableHJMasked(char* rName, cl_mem* Rout, int* outLen, int isBuild) {
+  unsigned int U = ns_hj_U();
+  int len = isBuild ? (int)U : Query_rLen;
+  Record* tmp = (Record*)malloc(sizeof(Record) * len);
+  if (isBuild) {
+    for (int i = 0; i < len; i++) { tmp[i].rid = i % U; tmp[i].value = i; } // key in rid slot
+  } else {
+    unsigned int s = 0x9E3779B9u;
+    for (int i = 0; i < len; i++) { s = s * 1664525u + 1013904223u; tmp[i].rid = (int)((s >> 8) % U); tmp[i].value = i; }
+  }
+  int memSize = len * sizeof(Record);
+  CL_CREATE(Rout, memSize);
+  CopyCPUToGPU(*Rout, tmp, memSize);
+  free(tmp);
+  *outLen = len;
+  return 0;
 }
 
 int Database::test(void) {

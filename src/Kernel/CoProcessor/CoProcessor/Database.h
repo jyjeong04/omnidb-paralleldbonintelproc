@@ -28,10 +28,17 @@ public:
 	int createSortedTable(char* rName, cl_mem R, int Query_rLen);
 	int dropTable(char* rName);
 	int getTable(char* rName, cl_mem* Rout, int * Query_rLen);
+	int getTable16(char* rName, cl_mem* Rout, int * Query_rLen);
+	int getTableMasked(char* rName, cl_mem* Rout, int * Query_rLen);
+	void nsMaskHostTableOnce(int id);
+
+	int getTableHJ16(char* rName, cl_mem* Rout, int* outLen, int isBuild);
+	int getTableHJMasked(char* rName, cl_mem* Rout, int* outLen, int isBuild);
 
 	HashTable* nameIndex; //map the table name to the index.
 	int numTable;
 	Record** tables;
+	unsigned short** tables16;
 	TableProperty* tPro;
 	static int test(void);
 	RET_VALUE getTableProperty(int tableID, TableProperty* py);

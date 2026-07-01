@@ -89,7 +89,28 @@ extern "C" int CL_RangeSelectionOnly(cl_mem d_Rin, int rLen, int rangeSmallKey, 
 	//printf("FilterFinish\n");
 	return outSize;
 }
-extern "C" int CL_RangeSelection(Record* h_Rin, int rLen, int rangeSmallKey, int rangeLargeKey, Record** h_Rout, 
+extern "C" int CL_RangeSelectionOnly16(cl_mem d_Rin16, int rLen, int rangeSmallKey, int rangeLargeKey, cl_mem* d_Rout16, cl_mem* d_RidOut,
+															  int numThreadPB, int numBlock,int _CPU_GPU )
+{
+	cl_event eventList[2];
+	int index=0;
+	cl_kernel Kernel;
+	int CPU_GPU;
+	double burden;
+	int* outSize = (int*)malloc( sizeof(int) );
+	int beginPos = 0;
+	filterImpl_ns( d_Rin16, beginPos, rLen, d_Rout16, outSize, d_RidOut,
+				numThreadPB, numBlock, rangeSmallKey, rangeLargeKey,&index,eventList,&Kernel,&CPU_GPU,&burden,_CPU_GPU );
+	clWaitForEvents(1,&eventList[(index-1)%2]);
+	deschedule(CPU_GPU,burden);
+	clReleaseKernel(Kernel);
+	clReleaseEvent(eventList[0]);
+	clReleaseEvent(eventList[1]);
+	int result = *outSize;
+	free(outSize);
+	return result;
+}
+extern "C" int CL_RangeSelection(Record* h_Rin, int rLen, int rangeSmallKey, int rangeLargeKey, Record** h_Rout,
 															  int numThreadPB, int numBlock,int _CPU_GPU )
 {
 	cl_event eventList[2];

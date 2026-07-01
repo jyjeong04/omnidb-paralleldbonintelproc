@@ -14,6 +14,18 @@ void BinaryThreadOp::init(cl_mem p_R, int p_rLen, cl_mem p_S, int p_sLen)
 	Query_rLen=p_rLen;
 	S=p_S;
 	sLen=p_sLen;
+	nsHJ=0;
+	nsNarrow=0;
+}
+
+void BinaryThreadOp::initNSHJ(cl_mem p_R, int p_rLen, cl_mem p_S, int p_sLen, int narrow)
+{
+	R=p_R;
+	Query_rLen=p_rLen;
+	S=p_S;
+	sLen=p_sLen;
+	nsHJ=1;
+	nsNarrow=narrow;
 }
 
 BinaryThreadOp::~BinaryThreadOp(void)
@@ -43,9 +55,26 @@ void BinaryThreadOp::execute(EXEC_MODE eM)
 				}break;
 			case JOIN_HJ:
 				{
-					//printf("CL_hjOnly::execute\n");
-					numResult=CL_hjOnly(R,Query_rLen,S,sLen,&Rout,eM);
-					//printf("CL_hjOnly::finished\n");
+					static int decomMode = -1;
+					if (decomMode < 0)
+						decomMode = (getenv("DECOM_MODE") && atoi(getenv("DECOM_MODE"))) ? 1 : 0;
+					if(nsHJ && nsNarrow && decomMode)
+					{
+						// cPDE HJ: decompress (D) the NS-compressed R/S, then run the
+						// build+probe (E) on the decompressed 8-byte data (CPU+GPU split,
+						// optional P). Only the narrow/compressed path feeds cPDE.
+						numResult=CL_hjOnly_cPDE(R,Query_rLen,S,sLen,&Rout,eM);
+					}
+					else if(nsHJ)
+					{
+						numResult=CL_hjOnly_ns(R,Query_rLen,S,sLen,&Rout,nsNarrow,eM);
+					}
+					else
+					{
+						//printf("CL_hjOnly::execute\n");
+						numResult=CL_hjOnly(R,Query_rLen,S,sLen,&Rout,eM);
+						//printf("CL_hjOnly::finished\n");
+					}
 				}break;
 		}
 		//ON_GPU_DONE("BinaryThreadOp::execute");

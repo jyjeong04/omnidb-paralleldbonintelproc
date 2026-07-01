@@ -912,7 +912,7 @@ filterImpl_map_kernel(__global Record* d_Rin, int beginPos, int rLen, __global i
 	int delta=get_global_size(0);
 	__global uint *dummy_addr = dummy_buffer;
 
-	// noWAS (wassize<=0): 기존 동작과 동일
+	// noWAS (wassize<=0)
 	if (wassize <= 0) {
 		for(int pos=iGID;pos<rLen;pos+=delta)
 		{
@@ -924,8 +924,6 @@ filterImpl_map_kernel(__global Record* d_Rin, int beginPos, int rLen, __global i
 		return;
 	}
 
-	// WAS: WG 단위 partition (같은 WG는 같은 CU에서 순차 실행 → race 없음, PoCL CPU 가정).
-	// main이 다음에 처리할 입력 레코드 주소(&d_Rin[pos])를 post하면 1-CU helper가 prefetch.
 	int was_per_wg = wassize / num_wg;
 	int was_base = wgid * was_per_wg;
 	int was_step = 0;
@@ -943,10 +941,11 @@ filterImpl_map_kernel(__global Record* d_Rin, int beginPos, int rLen, __global i
 			d_mark[old_pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
 		}
 	}
-	// flush — 지연된 tail 튜플 처리 (정확성 필수): WG의 슬롯 전체를 비우며 처리
+	// flush
 	for (int i = 0; i < was_per_wg; i++) {
 		int slot = was_base + i;
 		int old_pos = (int)was_buffer[slot].state1;
+		if (old_pos < 0) break;   // in-flight posts are a contiguous prefix; rest empty
 		was_buffer[slot].p1 = dummy_addr;
 		was_buffer[slot].state1 = -1;
 		if (old_pos >= 0 && old_pos < rLen) {
@@ -1060,12 +1059,161 @@ filterImpl_write_kernel(__global Record* d_Rout,__global Record* d_Rin, __global
 	for (int i = 0; i < was_per_wg; i++) {
 		int slot = was_base + i;
 		int old_pos = (int)was_buffer[slot].state1;
+		if (old_pos < 0) break;   // in-flight posts are a contiguous prefix; rest empty
 		was_buffer[slot].p1 = dummy_addr;
 		was_buffer[slot].state1 = -1;
 		if (old_pos >= 0 && old_pos < rLen) {
 			int flag=d_mark[old_pos];
 			int writePos=d_markOutput[old_pos];
 			if(flag) d_Rout[writePos]=d_Rin[old_pos];
+		}
+	}
+}
+
+__kernel void //kid=24 (cPDE decompress)
+decompress_kernel(__global ushort* d_in, __global Record* d_out, int rLen)
+{
+	int delta = get_global_size(0);
+	for (int i = get_global_id(0); i < rLen; i += delta) {
+		Record r;
+		r.x = (uint)i;            // rid surrogate = tuple position (reconstructed)
+		r.y = (uint)d_in[i];      // widen the 16-bit key (value-preserving)
+		d_out[i] = r;
+	}
+}
+
+// cPDE-HJ decompress: like decompress_kernel but the widened 16-bit KEY lands in
+// slot[0] (.x) so the 8-byte build_kernel_w16/probe_kernel_w16 (which read key from
+// slot[0] & 0xFFFF and payload from slot[1]) operate directly on the decompressed
+// Record. The rid surrogate (tuple position) goes in slot[1] (.y), mirroring the
+// _ns build/probe payload (R payload = rid). `base` lets a decompressed S BLOCK keep
+// its global rid surrogate (off + i) so the payload matches the non-blocked path.
+__kernel void //kid=24b (cPDE-HJ decompress: key in slot[0])
+decompress_hj_kernel(__global ushort* d_in, __global Record* d_out, int rLen, int base)
+{
+	int delta = get_global_size(0);
+	for (int i = get_global_id(0); i < rLen; i += delta) {
+		Record r;
+		r.x = (uint)d_in[i] & 0xFFFFu; // widen the 16-bit key into slot[0]
+		r.y = (uint)(base + i);        // rid surrogate = global tuple position
+		d_out[i] = r;
+	}
+}
+
+__kernel void // ns-map (burden kid=20)
+filterImpl_map_kernel_ns(__global ushort* d_Rin16, int beginPos, int rLen, __global int* d_mark,
+						 int smallKey, int largeKey, __global int* d_temp,
+						 __global WASEntry *was_buffer, int wassize, __global uint *dummy_buffer)
+{
+	int iGID = get_global_id(0);
+	int wgid = get_group_id(0);
+	int num_wg = get_num_groups(0);
+	int delta = get_global_size(0);
+	__global uint *dummy_addr = dummy_buffer;
+
+	// noWAS (wassize<=0)
+	if (wassize <= 0) {
+		for(int pos=iGID; pos<rLen; pos+=delta)
+		{
+			int key = (int)d_Rin16[pos];   // 2-byte value compared directly (value-preserving NS)
+			d_temp[pos] = pos;             // rid surrogate = position
+			d_mark[pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
+		}
+		return;
+	}
+
+	int was_per_wg = wassize / num_wg;
+	int was_base = wgid * was_per_wg;
+	int was_step = 0;
+	for(int pos=iGID; pos<rLen; pos+=delta)
+	{
+		int pp = (pos < rLen - 1) ? pos : (rLen - 2); // 4B read stays in bounds
+		WASEntry old = post(was_buffer, (__global uint *)&d_Rin16[pp], dummy_addr,
+							pos, -1, was_base + was_step);
+		was_step++;
+		if (was_step >= was_per_wg) was_step = 0;
+		int old_pos = (int)old.state1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			int key = (int)d_Rin16[old_pos];
+			d_temp[old_pos] = old_pos;
+			d_mark[old_pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
+		}
+	}
+	// flush
+	for (int i = 0; i < was_per_wg; i++) {
+		int slot = was_base + i;
+		int old_pos = (int)was_buffer[slot].state1;
+		if (old_pos < 0) break;   // in-flight posts are a contiguous prefix; rest empty
+		was_buffer[slot].p1 = dummy_addr;
+		was_buffer[slot].state1 = -1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			int key = (int)d_Rin16[old_pos];
+			d_temp[old_pos] = old_pos;
+			d_mark[old_pos] = (key >= smallKey && key <= largeKey) ? 1 : 0;
+		}
+	}
+}
+
+__kernel void // ns-write (burden kid=23)
+filterImpl_write_kernel_ns(__global ushort* d_Rout16, __global ushort* d_Rin16, __global int* d_mark,
+						   __global int* d_markOutput, int beginPos, int rLen, __global int* d_RidOut,
+						   __global WASEntry *was_buffer, int wassize, __global uint *dummy_buffer)
+{
+	int iGID = get_global_id(0);
+	int wgid = get_group_id(0);
+	int num_wg = get_num_groups(0);
+	int delta = get_global_size(0);
+	__global uint *dummy_addr = dummy_buffer;
+
+	// noWAS (wassize<=0)
+	if (wassize <= 0) {
+		for(int pos=iGID; pos<rLen; pos+=delta)
+		{
+			int flag = d_mark[pos];
+			if(flag)
+			{
+				int writePos = d_markOutput[pos];
+				d_Rout16[writePos] = d_Rin16[pos];   // compacted narrow value (NS output)
+				d_RidOut[writePos] = beginPos + pos;  // rid surrogate = tuple position (matches the 8-byte path's .rid)
+			}
+		}
+		return;
+	}
+
+	int was_per_wg = wassize / num_wg;
+	int was_base = wgid * was_per_wg;
+	int was_step = 0;
+	for(int pos=iGID; pos<rLen; pos+=delta)
+	{
+		int pp = (pos < rLen - 1) ? pos : (rLen - 2); // 4B read stays in bounds
+		WASEntry old = post(was_buffer, (__global uint *)&d_Rin16[pp], dummy_addr,
+							pos, -1, was_base + was_step);
+		was_step++;
+		if (was_step >= was_per_wg) was_step = 0;
+		int old_pos = (int)old.state1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			int flag = d_mark[old_pos];
+			if(flag) {
+				int writePos = d_markOutput[old_pos];
+				d_Rout16[writePos] = d_Rin16[old_pos];
+				d_RidOut[writePos] = beginPos + old_pos;
+			}
+		}
+	}
+	// flush
+	for (int i = 0; i < was_per_wg; i++) {
+		int slot = was_base + i;
+		int old_pos = (int)was_buffer[slot].state1;
+		if (old_pos < 0) break;   // in-flight posts are a contiguous prefix; rest empty
+		was_buffer[slot].p1 = dummy_addr;
+		was_buffer[slot].state1 = -1;
+		if (old_pos >= 0 && old_pos < rLen) {
+			int flag = d_mark[old_pos];
+			if(flag) {
+				int writePos = d_markOutput[old_pos];
+				d_Rout16[writePos] = d_Rin16[old_pos];
+				d_RidOut[writePos] = beginPos + old_pos;
+			}
 		}
 	}
 }
@@ -2759,6 +2907,7 @@ __kernel //kid 59
   for (int i = 0; i < was_per_wg; i++) {
     int slot = was_base + i;
     __global uint *bhead = was_buffer[slot].p1;
+    if (bhead == dummy_addr) break;   // contiguous prefix of posts; rest empty
     if (bhead != dummy_addr) {
       long skey = was_buffer[slot].state1;
       long sval = was_buffer[slot].state2;
@@ -2776,6 +2925,260 @@ __kernel //kid 59
     was_buffer[slot].p1 = dummy_addr;
   }
 }
+
+__kernel
+void build_kernel_ns(__global ushort * rTable16,
+                     __global uint   * rHashTable,
+                     const uint        rTupleNum,
+                     const uint        rHashTableBucketNum,
+                     const uint        hashBucketCap)
+{
+    uint numWorkItems = get_global_size(0);
+    uint tid          = get_global_id(0);
+    uint key, hash, count;
+
+    while (tid < rTupleNum)
+    {
+        key  = (uint)rTable16[tid] & 0xFFFFu;
+        hash = djb2_hash(key, rHashTableBucketNum);
+        if ((count = atomic_inc(&rHashTable[hash * (1 + hashBucketCap * 2)])) < hashBucketCap)
+        {
+            rHashTable[1 + hash * (1 + hashBucketCap * 2) + count * 2 + 0] = key;
+            rHashTable[1 + hash * (1 + hashBucketCap * 2) + count * 2 + 1] = tid; // R payload (rid)
+        }
+        tid += numWorkItems;
+    }
+}
+
+__kernel
+void probe_kernel_ns(__global uint   * rHashTable,
+                     __global ushort * sTable16,
+                     __global uint   * matchedTable,
+                     const uint        sTupleNum,
+                     const uint        rHashTableBucketNum,
+                     const uint        hashBucketCap,
+                     const uint        matchedTupleNum,
+                     __global WASEntry *was_buffer,
+                     int               wassize,
+                     __global uint    *dummy_buffer)
+{
+    uint numWorkItems = get_global_size(0);
+    uint tid          = get_global_id(0);
+    int  wgid         = get_group_id(0);
+    int  num_wg       = get_num_groups(0);
+    __global uint *dummy_addr = dummy_buffer;
+    uint key, hash, count, matchedNum;
+
+    // noWAS (wassize<=0)
+    if (wassize <= 0) {
+        while (tid < sTupleNum)
+        {
+            key  = (uint)sTable16[tid] & 0xFFFFu;
+            hash = djb2_hash(key, rHashTableBucketNum);
+            count = 0;
+            while (count < hashBucketCap)
+            {
+                if (rHashTable[1 + hash * (1 + hashBucketCap * 2) + count * 2] == key)
+                {
+                    matchedNum = atomic_inc(&matchedTable[0]);
+                    if (matchedNum < matchedTupleNum) {
+                        matchedTable[4 + matchedNum * 4 + 0] = key;       // S key
+                        matchedTable[4 + matchedNum * 4 + 1] = tid;       // S rid
+                        matchedTable[4 + matchedNum * 4 + 2] = key;       // R key
+                        matchedTable[4 + matchedNum * 4 + 3] =
+                            rHashTable[1 + hash * (1 + hashBucketCap * 2) + count * 2 + 1]; // R rid
+                    }
+                }
+                count++;
+            }
+            tid += numWorkItems;
+        }
+        return;
+    }
+
+    int was_per_wg = wassize / num_wg;
+    int was_base = wgid * was_per_wg;
+    int was_step = 0;
+    while (tid < sTupleNum) {
+        key  = (uint)sTable16[tid] & 0xFFFFu;
+        hash = djb2_hash(key, rHashTableBucketNum);
+        WASEntry old =
+            post(was_buffer, &rHashTable[1 + hash * (1 + hashBucketCap * 2)],
+                 dummy_addr, (long)key, (long)tid, was_base + was_step);
+        was_step = (was_step >= was_per_wg - 1) ? 0 : was_step + 1;
+        if (old.p1 != dummy_addr) {
+            uint okey = (uint)old.state1;   // displaced S key
+            uint otid = (uint)old.state2;   // displaced S rid
+            count = 0;
+            while (count < hashBucketCap) {
+                __global uint *bk = old.p1 + count * 2; // entry: key@[0], R-payload@[1]
+                if (*bk == okey) {
+                    matchedNum = atomic_inc(&matchedTable[0]);
+                    if (matchedNum < matchedTupleNum) {
+                        matchedTable[4 + matchedNum * 4 + 0] = okey;   // S key
+                        matchedTable[4 + matchedNum * 4 + 1] = otid;   // S rid
+                        matchedTable[4 + matchedNum * 4 + 2] = okey;   // R key
+                        matchedTable[4 + matchedNum * 4 + 3] = *(bk + 1); // R rid
+                    }
+                }
+                count++;
+            }
+        }
+        tid += numWorkItems;
+    }
+    // flush
+    for (int i = 0; i < was_per_wg; i++) {
+        int slot = was_base + i;
+        __global uint *bhead = was_buffer[slot].p1;
+        if (bhead == dummy_addr) break;   // contiguous prefix of posts; rest empty
+        if (bhead != dummy_addr) {
+            uint okey = (uint)was_buffer[slot].state1;
+            uint otid = (uint)was_buffer[slot].state2;
+            for (uint c2 = 0; c2 < hashBucketCap; c2++) {
+                __global uint *bk = bhead + c2 * 2;
+                if (*bk == okey) {
+                    matchedNum = atomic_inc(&matchedTable[0]);
+                    if (matchedNum < matchedTupleNum) {
+                        matchedTable[4 + matchedNum * 4 + 0] = okey;
+                        matchedTable[4 + matchedNum * 4 + 1] = otid;
+                        matchedTable[4 + matchedNum * 4 + 2] = okey;
+                        matchedTable[4 + matchedNum * 4 + 3] = *(bk + 1);
+                    }
+                }
+            }
+        }
+        was_buffer[slot].p1 = dummy_addr;
+    }
+}
+
+__kernel
+void build_kernel_w16(__global uint * rTable,
+                      __global uint * rHashTable,
+                      const uint      rTupleNum,
+                      const uint      rHashTableBucketNum,
+                      const uint      hashBucketCap)
+{
+    uint numWorkItems = get_global_size(0);
+    uint tid          = get_global_id(0);
+    uint key, val, hash, count;
+
+    while (tid < rTupleNum)
+    {
+        key  = rTable[tid * 2 + 0] & 0xFFFFu;
+        val  = rTable[tid * 2 + 1];
+        hash = djb2_hash(key, rHashTableBucketNum);
+        if ((count = atomic_inc(&rHashTable[hash * (1 + hashBucketCap * 2)])) < hashBucketCap)
+        {
+            rHashTable[1 + hash * (1 + hashBucketCap * 2) + count * 2 + 0] = key;
+            rHashTable[1 + hash * (1 + hashBucketCap * 2) + count * 2 + 1] = val;
+        }
+        tid += numWorkItems;
+    }
+}
+
+__kernel
+void probe_kernel_w16(__global uint * rHashTable,
+                      __global uint * sTable,
+                      __global uint * matchedTable,
+                      const uint      sTupleNum,
+                      const uint      rHashTableBucketNum,
+                      const uint      hashBucketCap,
+                      const uint      matchedTupleNum,
+                      __global WASEntry *was_buffer,
+                      int               wassize,
+                      __global uint    *dummy_buffer)
+{
+    uint numWorkItems = get_global_size(0);
+    uint tid          = get_global_id(0);
+    int  wgid         = get_group_id(0);
+    int  num_wg       = get_num_groups(0);
+    __global uint *dummy_addr = dummy_buffer;
+    uint key, val, hash, count, matchedNum;
+
+    // noWAS (wassize<=0)
+    if (wassize <= 0) {
+        while (tid < sTupleNum)
+        {
+            key  = sTable[tid * 2 + 0] & 0xFFFFu;
+            val  = sTable[tid * 2 + 1];
+            hash = djb2_hash(key, rHashTableBucketNum);
+            count = 0;
+            while (count < hashBucketCap)
+            {
+                if (rHashTable[1 + hash * (1 + hashBucketCap * 2) + count * 2] == key)
+                {
+                    matchedNum = atomic_inc(&matchedTable[0]);
+                    if (matchedNum < matchedTupleNum) {
+                        matchedTable[4 + matchedNum * 4 + 0] = key;       // S key
+                        matchedTable[4 + matchedNum * 4 + 1] = val;       // S val
+                        matchedTable[4 + matchedNum * 4 + 2] = key;       // R key
+                        matchedTable[4 + matchedNum * 4 + 3] =
+                            rHashTable[1 + hash * (1 + hashBucketCap * 2) + count * 2 + 1]; // R val
+                    }
+                }
+                count++;
+            }
+            tid += numWorkItems;
+        }
+        return;
+    }
+
+    int was_per_wg = wassize / num_wg;
+    int was_base = wgid * was_per_wg;
+    int was_step = 0;
+    while (tid < sTupleNum) {
+        key  = sTable[tid * 2 + 0] & 0xFFFFu;
+        val  = sTable[tid * 2 + 1];
+        hash = djb2_hash(key, rHashTableBucketNum);
+        WASEntry old =
+            post(was_buffer, &rHashTable[1 + hash * (1 + hashBucketCap * 2)],
+                 dummy_addr, (long)key, (long)val, was_base + was_step);
+        was_step = (was_step >= was_per_wg - 1) ? 0 : was_step + 1;
+        if (old.p1 != dummy_addr) {
+            uint okey = (uint)old.state1;   // displaced S key
+            uint oval = (uint)old.state2;   // displaced S val
+            count = 0;
+            while (count < hashBucketCap) {
+                __global uint *bk = old.p1 + count * 2; // entry: key@[0], R-payload@[1]
+                if (*bk == okey) {
+                    matchedNum = atomic_inc(&matchedTable[0]);
+                    if (matchedNum < matchedTupleNum) {
+                        matchedTable[4 + matchedNum * 4 + 0] = okey;   // S key
+                        matchedTable[4 + matchedNum * 4 + 1] = oval;   // S val
+                        matchedTable[4 + matchedNum * 4 + 2] = okey;   // R key
+                        matchedTable[4 + matchedNum * 4 + 3] = *(bk + 1); // R val
+                    }
+                }
+                count++;
+            }
+        }
+        tid += numWorkItems;
+    }
+    // flush
+    for (int i = 0; i < was_per_wg; i++) {
+        int slot = was_base + i;
+        __global uint *bhead = was_buffer[slot].p1;
+        if (bhead == dummy_addr) break;   // contiguous prefix of posts; rest empty
+        if (bhead != dummy_addr) {
+            uint okey = (uint)was_buffer[slot].state1;
+            uint oval = (uint)was_buffer[slot].state2;
+            for (uint c2 = 0; c2 < hashBucketCap; c2++) {
+                __global uint *bk = bhead + c2 * 2;
+                if (*bk == okey) {
+                    matchedNum = atomic_inc(&matchedTable[0]);
+                    if (matchedNum < matchedTupleNum) {
+                        matchedTable[4 + matchedNum * 4 + 0] = okey;
+                        matchedTable[4 + matchedNum * 4 + 1] = oval;
+                        matchedTable[4 + matchedNum * 4 + 2] = okey;
+                        matchedTable[4 + matchedNum * 4 + 3] = *(bk + 1);
+                    }
+                }
+            }
+        }
+        was_buffer[slot].p1 = dummy_addr;
+    }
+}
+
 #if defined(__x86_64__) || defined(__i386__)
 #define CPU_PAUSE() __asm__ __volatile__("pause" ::: "memory")
 #elif defined(__aarch64__)
@@ -2784,13 +3187,7 @@ __kernel //kid 59
 #define CPU_PAUSE() ((void)0)
 #endif
 
-// kid = 51 — paper-faithful WAS helper (Zhou et al. VLDB 2005 §4.1, §4.3,
-// §4.4):
-//  - first-pointer comparison for change detection (§4.4)
-//  - unconditional p1+p2 preload, no branch on state (§4.1)
-//  - backward processing (§4.3) — sequential idx-- with wassize wraparound
-//  - dummy slots never spin, just advance (§4.4)
-//>>>WASK_BEGIN
+
 __kernel void WAS_kernel(volatile __global WASEntry *was_buffer,
                          const int wassize, volatile __global uint *ctrl,
                          __global ulong *last_tag, const int wasMode) {
@@ -2803,9 +3200,7 @@ __kernel void WAS_kernel(volatile __global WASEntry *was_buffer,
   int idx = dirBack ? (wassize - 1) : 0;
   const ulong dummyVal = (ulong)(uintptr_t)ctrl;
 
-  if (wasMode & 8) { // bit3: 64B-wide — examine 2 entries (one cache line) per
-    // iteration; issue both buckets' prefetch loads together => 2 in-flight DRAM
-    // misses (better MLP on the single helper core). Forward, nospin.
+  if (wasMode & 8) { 
     int i = 0;
     while (ctrl[1] == 0) {
       int j = (i + 1 < wassize) ? (i + 1) : i;
@@ -2870,4 +3265,3 @@ __kernel void WAS_kernel(volatile __global WASEntry *was_buffer,
   }
   ctrl[0] += count;
 }
-//<<<WASK_END

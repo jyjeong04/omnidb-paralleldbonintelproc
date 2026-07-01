@@ -70,7 +70,7 @@ ThreadOp* SingularThreadOp::getNextOp(EXEC_MODE eM)
 SelectionOp::SelectionOp(OP_MODE opt):
 SingularThreadOp(opt)
 {
-	
+	ns=false;
 }
 
 void SelectionOp::init(cl_mem p_R, int p_rLen, int p_lowerKey, int p_higherKey)
@@ -80,10 +80,38 @@ void SelectionOp::init(cl_mem p_R, int p_rLen, int p_lowerKey, int p_higherKey)
 	//Kernel_bufferchecking(R,1000);
 	lowerKey=p_lowerKey;
 	higherKey=p_higherKey;
+	ns=false;
+}
+
+void SelectionOp::initNS(cl_mem p_R16, int p_rLen, int p_lowerKey, int p_higherKey)
+{
+	R=p_R16;
+	Query_rLen=p_rLen;
+	lowerKey=p_lowerKey;
+	higherKey=p_higherKey;
+	ns=true;
+	nsRidOut=NULL;
 }
 
 void SelectionOp::execute(EXEC_MODE eM)
 {
+	static int decomMode = -1;
+	if (decomMode < 0)
+		decomMode = (getenv("DECOM_MODE") && atoi(getenv("DECOM_MODE"))) ? 1 : 0;
+	if(ns && decomMode)
+	{
+		numResult=CL_RangeSelectionOnly_cPDE(R,Query_rLen,lowerKey,higherKey,&Rout,NULL,256,512,eM);
+		fprintf(stderr,"[NS] cPDE selection: %d in, %d matched (keys [%d,%d])\n",
+				Query_rLen, numResult, lowerKey, higherKey);
+		return;
+	}
+	if(ns)
+	{
+		numResult=CL_RangeSelectionOnly16(R,Query_rLen,lowerKey,higherKey,&Rout,&nsRidOut,256,512,eM);
+		fprintf(stderr,"[NS] compressed selection: %d in, %d matched (keys [%d,%d])\n",
+				Query_rLen, numResult, lowerKey, higherKey);
+		return;
+	}
 		//printf("SelectionOp::execute\n");
 	if(lowerKey==higherKey)
 	{
@@ -100,8 +128,11 @@ void SelectionOp::execute(EXEC_MODE eM)
 	else
 	{
 		////printf("doing range selection, lowerKey is %d, Higher Key is %d",lowerKey,higherKey);
-		
+
 			numResult=CL_RangeSelectionOnly(R,Query_rLen,lowerKey, higherKey,&Rout,256,512,eM);
+			if (getenv("NS_MASK16") && atoi(getenv("NS_MASK16")))
+				fprintf(stderr,"[NS] masked  selection: %d in, %d matched (keys [%d,%d])\n",
+						Query_rLen, numResult, lowerKey, higherKey);
 	}
 	//printf("SelectionOp::execute done\n");
 }

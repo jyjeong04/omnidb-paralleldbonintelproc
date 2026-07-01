@@ -77,6 +77,16 @@ extern cl_command_queue FullCPUCommandQueue;  // 8-CU queue on parent Device[0] 
 extern int g_prefetchEnabled;                 // 1 = fission active
 void cl_init_prefetch();
 void cl_cleanup_prefetch();
+
+extern cl_device_id    DecomSubDevice;        
+extern cl_device_id    NonDecomSubDevice;     
+extern cl_command_queue DecomCommandQueue;    
+extern cl_command_queue NonDecomCommandQueue; 
+extern int g_decomEnabled;                    
+extern int g_decomCUs;                         
+extern int g_nonDecomCUs;                      
+void cl_init_decom();
+void cl_cleanup_decom();
 void cl_getKernel(char* kernelName,cl_kernel *kernel);
 void cl_getKernel(char* kernelName,int CPU_GPU);
 void cl_launchKernel(cl_uint work_dim, const size_t *groups, size_t *threads,cl_kernel *Kernel,int CPU_GPU);

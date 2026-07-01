@@ -51,12 +51,20 @@ extern "C" int DLL_EXPORT CL_smjOnly(cl_mem d_R, int rLen, cl_mem d_S, int sLen,
 extern "C" int DLL_EXPORT CL_PointSelectionOnly(cl_mem d_Rin, int rLen, int matchingKeyValue, cl_mem* d_Rout, 
 															  int numThreadPB, int numBlock,int _CPU_GPU );
 
-extern "C" int DLL_EXPORT CL_RangeSelectionOnly(cl_mem d_Rin, int rLen, int rangeSmallKey, int rangeLargeKey, cl_mem* d_Rout, 
+extern "C" int DLL_EXPORT CL_RangeSelectionOnly(cl_mem d_Rin, int rLen, int rangeSmallKey, int rangeLargeKey, cl_mem* d_Rout,
 															  int numThreadPB, int numBlock,int _CPU_GPU );
 
-extern "C" void DLL_EXPORT CL_ProjectionOnly(cl_mem d_Rin,int rLen, cl_mem d_projTable, int pLen, 
+extern "C" int DLL_EXPORT CL_RangeSelectionOnly16(cl_mem d_Rin16, int rLen, int rangeSmallKey, int rangeLargeKey, cl_mem* d_Rout16, cl_mem* d_RidOut,
+															  int numThreadPB, int numBlock,int _CPU_GPU );
+
+extern "C" int DLL_EXPORT CL_RangeSelectionOnly_cPDE(cl_mem d_Rin16, int rLen, int rangeSmallKey, int rangeLargeKey, cl_mem* d_Rout, int* d_RidOut_unused,
+															  int numThreadPB, int numBlock,int _CPU_GPU );
+
+extern "C" void DLL_EXPORT CL_ProjectionOnly(cl_mem d_Rin,int rLen, cl_mem d_projTable, int pLen,
 														   int numThread, int numBlock , int _CPU_GPU);
 extern "C" int DLL_EXPORT CL_hjOnly(cl_mem d_R, int rLen, cl_mem d_S, int sLen, cl_mem* h_Rout ,int _CPU_GPU);
+extern "C" int DLL_EXPORT CL_hjOnly_ns(cl_mem d_R, int rLen, cl_mem d_S, int sLen, cl_mem* h_Rout, int narrow, int _CPU_GPU);
+extern "C" int DLL_EXPORT CL_hjOnly_cPDE(cl_mem d_R, int rLen, cl_mem d_S, int sLen, cl_mem* h_Rout, int _CPU_GPU);
 
 extern "C" int DLL_EXPORT CL_inljOnly( cl_mem h_Rin, int rLen, CUDA_CSSTree** h_tree,cl_mem h_Sin, int sLen, cl_mem* h_Rout, int _CPU_GPU );
 

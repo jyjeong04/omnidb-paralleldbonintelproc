@@ -857,6 +857,7 @@ filterImpl_map_kernel(__global Record *d_Rin, int beginPos, int rLen,
   for (int i = 0; i < was_per_wg; i++) {
     int slot = was_base + i;
     int old_pos = (int)was_buffer[slot].state1;
+    if (old_pos < 0) break;   // in-flight posts are a contiguous prefix; rest empty
     was_buffer[slot].p1 = dummy_addr;
     was_buffer[slot].state1 = -1;
     if (old_pos >= 0 && old_pos < rLen) {
@@ -2486,6 +2487,7 @@ __kernel // kid 50
   for (int i = 0; i < was_per_wg; i++) {
     int slot = was_base + i;
     __global uint *bhead = was_buffer[slot].p1;
+    if (bhead == dummy_addr) break;   // contiguous prefix of posts; rest empty
     if (bhead != dummy_addr) {
       long skey = was_buffer[slot].state1;
       long sval = was_buffer[slot].state2;
